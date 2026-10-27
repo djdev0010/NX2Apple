@@ -1,7 +1,8 @@
 // Mac front end: with DM_WINDOW=1 open a window (CAMetalLayer, for the graphics backend to present frames) + keyboard and controllers → dm_input; the guest runs on a large-stack thread instead and the main thread belongs to AppKit.
 // Without DM_WINDOW: the guest runs directly on the current thread, behaving the same as with no front end (windowless tests use this).
 // The window is fullscreen-capable (the green button and ⌃⌘F); DM_FULLSCREEN starts it that way. ⌘Q quits; the left mouse button is the touchscreen.
-// Key map (Nintendo layout): WASD left stick, arrow keys D-pad, J=A K=B U=X I=Y, Q=L E=R, Z=ZL C=ZR, F=press left stick G=press right stick, Return=+ Tab=−, Space=shake the controller.
+// Key map (Nintendo layout): WASD left stick, arrow keys D-pad, J=A K=B U=X I=Y, Q=L E=R, Z=ZL C=ZR, F=press left stick G=press right stick, Return=+ Tab=−, Space=shake the controller;
+// DM_KEYMAP moves a function to another key (the right stick too), DM_PAD_MAP changes what a controller's buttons send (input_map.h).
 // Controllers: buttons by position as on the iPhone (right A, bottom B, top X, left Y), shoulders L R, triggers ZL ZR, Menu + Options −, both sticks and their presses.
 // Each controller is a player of its own (local co-op): the first one connected is player 1, together with the keyboard, the next player 2, and so on up to 8 (pad_slots.h);
 // DM_PAD_MERGE=1 merges every controller into player 1 instead, DM_KBD_PLAYER=own makes the keyboard player 1 on its own, with the controllers from player 2 on.
@@ -13,17 +14,16 @@
 #include "dm.h"
 #include "dm_input.h"
 #include "front.h"
-#include "touchpad_geometry.h"   // the virtual pad iOS draws, so the preview matches it
 #include "hle.h"
 #include "pad_slots.h"
 #include "controls_mac.h"
+#include "input_map.h"
 #include "haptics_apple.h"
 #include <signal.h>
 #include <math.h>
 
 static CAMetalLayer *g_layer;
 static uint64_t g_btn;
-static int g_w, g_a, g_s, g_d;
 static int g_input_on = 1;   // main thread: the game window is key, so its keyboard, mouse and controllers reach the game (input_release / input_resume)
 
 void *front_metal_layer(void) { return (__bridge void *)g_layer; }
@@ -85,27 +85,20 @@ void front_screen_match(int fps) {
     if (!g_layer || g_match_want == fps) return;   // no window (a windowless run's main thread runs the guest), or the rate as before
     g_match_want = fps; dispatch_async(dispatch_get_main_queue(), ^{ screen_match_apply(); });
 }
+// Keyboard: each key holds one function of the key map (input_map.h; DM_KEYMAP changes it), the held functions make the buttons and both sticks
+static key_map g_keys;
+static uint32_t g_held_fn;   // bit f: a key holding function f is down
 static void push(void) {
-    int32_t lx = (g_d - g_a) * 32767, ly = (g_w - g_s) * 32767;
-    dm_input_set(g_btn, lx, ly, 0, 0);
-}
-static int key_bit(unsigned short code) {
-    switch (code) {
-        case 38: return 0;  case 40: return 1;  case 32: return 2;  case 34: return 3;    // J K U I → A B X Y
-        case 3: return 4;   case 5: return 5;                                            // F G → press stick
-        case 12: return 6;  case 14: return 7;  case 6: return 8;   case 8: return 9;    // Q E Z C → L R ZL ZR
-        case 36: return 10; case 48: return 11;                                          // Return Tab → + −
-        case 123: return 12; case 126: return 13; case 124: return 14; case 125: return 15; // ← ↑ → ↓
-    }
-    return -1;
+    uint32_t h = g_held_fn;
+    #define D(f) ((int32_t)(h >> (f) & 1))
+    dm_input_set(g_btn, (D(IM_LRIGHT) - D(IM_LLEFT)) * 32767, (D(IM_LUP) - D(IM_LDOWN)) * 32767, (D(IM_RRIGHT) - D(IM_RLEFT)) * 32767, (D(IM_RUP) - D(IM_RDOWN)) * 32767);
+    #undef D
 }
 static void on_key(NSEvent *e, int down) {
     if (!g_input_on) return;
-    unsigned short c = e.keyCode;
-    switch (c) { case 13: g_w = down; break; case 0: g_a = down; break; case 1: g_s = down; break; case 2: g_d = down; break; }
-    int b = key_bit(c);
-    uint64_t m = b >= 0 ? 1ull << b : c == 49 ? DM_BTN_SHAKE : 0;   // Space: shaken while held
-    g_btn = down ? (g_btn | m) : (g_btn & ~m);
+    int f = key_map_fn(&g_keys, e.keyCode); if (f < 0) return;
+    g_held_fn = down ? (g_held_fn | 1u << f) : (g_held_fn & ~(1u << f));
+    g_btn = (g_held_fn & 0xffff) | (g_held_fn >> IM_SHAKE & 1 ? DM_BTN_SHAKE : 0);
     push();
 }
 
@@ -117,13 +110,14 @@ static void on_key(NSEvent *e, int down) {
 static pad_slots g_slots;
 static GCController *g_held[DM_PLAYERS];   // the controller of each slot, kept alive while it holds it (the slot table keys on its pointer)
 static int g_merge, g_kbd_own;
+static pad_map g_padmap;   // DM_PAD_MAP (input_map.h): what each button sends, applied to every controller after its Settings → Controllers map
 static void pad_read(GCExtendedGamepad *g) {
     controls_seen(g);
     if (!g_input_on) return;
     int p = g_merge ? 0 : pad_slot_of(&g_slots, (__bridge const void *)g.controller); if (p < 0) return;
     dm_haptics_apple_controller(p, g.controller);
     int32_t st[4]; controls_sticks(g, st);
-    dm_pad_set_player(p, controls_buttons(g), st[0], st[1], st[2], st[3]);
+    dm_pad_set_player(p, pad_map_apply(&g_padmap, controls_buttons(g)), st[0], st[1], st[2], st[3]);
 }
 const char *pad_name(GCController *c) { return c.vendorName.UTF8String ?: "?"; }
 static void npad_name(int p, char *out, size_t cap) { uint32_t id = dm_player_npad(p); if (id == 0x20) snprintf(out, cap, "handheld"); else snprintf(out, cap, "%u", id); }
@@ -157,12 +151,12 @@ static void pads_changed(GCController *gone) {
     dm_pad_players(pad_slot_mask(&g_slots));
 }
 // Focus: a window that is no longer key sees no key-up, mouse-up or controller release, so whatever is held when it loses focus (another app, the text box, minimized) would
-// stay pressed in the game. The front end releases only what it pressed itself: player 1's pad and the touch are also DM_KEYS / DM_CTL's (hle_hid.c), and a scripted hold goes on.
+// stay pressed in the game. The front end releases only what it pressed itself: scripted buttons and sticks have their own path, and the touch is also DM_KEYS / DM_CTL's (hle_hid.c).
 // Out of focus a controller's changes are ignored, so back in focus each controller is read as it is now (a button still held, a stick still deflected)
 static int g_mouse_down;   // the mouse holds the touch (DmGameView)
 static void input_release(void) {
     g_input_on = 0;
-    g_btn = 0; g_w = g_a = g_s = g_d = 0; push();
+    g_btn = 0; g_held_fn = 0; push();
     if (g_mouse_down) { g_mouse_down = 0; dm_touch_set(NULL, 0); }
     if (g_merge) { for (GCController *c in GCController.controllers) if (c.extendedGamepad) { dm_pad_set(0, 0, 0, 0, 0); break; } }
     else for (int p = 0; p < DM_PLAYERS; p++) if (g_held[p]) dm_pad_set_player(p, 0, 0, 0, 0, 0);
@@ -173,6 +167,10 @@ static void input_resume(void) {
     else for (int p = 0; p < DM_PLAYERS; p++) if (g_held[p].extendedGamepad) pad_read(g_held[p].extendedGamepad);
 }
 static void pads_start(void) {
+    key_map_default(&g_keys); pad_map_default(&g_padmap);
+    const char *km = getenv("DM_KEYMAP"), *pm = getenv("DM_PAD_MAP");
+    if (km && *km) { int bad = key_map_parse(&g_keys, km); LOG("front end: keyboard map from DM_KEYMAP (%s)%s", km, bad ? ", malformed entries left out" : ""); }
+    if (pm && *pm) { int bad = pad_map_parse(&g_padmap, pm); LOG("front end: controller buttons from DM_PAD_MAP (%s)%s", pm, bad ? ", malformed entries left out" : ""); }
     const char *e = getenv("DM_PAD_MERGE"); g_merge = e && atoi(e);
     e = getenv("DM_KBD_PLAYER"); g_kbd_own = !g_merge && e && !strcmp(e, "own");
     static const char kbd = 0;
@@ -187,87 +185,6 @@ static void pads_start(void) {
 
 // Mouse as a single-point touchscreen (front.h dm_touch_set): left button down / drag = finger 0, release = lifted. The content view takes the clicks,
 // not a window-wide event monitor, so clicks on the title bar, the window buttons and the resize edges still reach AppKit.
-// Touch preview (DM_TOUCH_PREVIEW=1): the virtual pad iOS draws, over the picture, with the
-// control under the mouse highlighted. Geometry comes from touchpad_geometry.h — the same header
-// the iPhone controls use — so tuning the layout here is tuning it there. The safe-area insets are
-// zero because a Mac window has no notch; an iPhone reports its own.
-@interface DmTouchPreview : NSView
-@property (nonatomic) NSPoint hover;
-@property (nonatomic) BOOL tracking;
-@end
-@implementation DmTouchPreview
-- (BOOL)isFlipped { return YES; }   // top-left origin, as the geometry header expects
-- (void)updateTrackingAreas {
-    [super updateTrackingAreas];
-    for (NSTrackingArea *a in self.trackingAreas) [self removeTrackingArea:a];
-    [self addTrackingArea:[[NSTrackingArea alloc] initWithRect:self.bounds
-        options:NSTrackingMouseMoved | NSTrackingMouseEnteredAndExited | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect
-        owner:self userInfo:nil]];
-}
-- (void)mouseMoved:(NSEvent *)e { self.hover = [self convertPoint:e.locationInWindow fromView:nil]; self.tracking = NO; [self setNeedsDisplay:YES]; }
-- (void)mouseEntered:(NSEvent *)e { [self mouseMoved:e]; }
-- (void)mouseExited:(NSEvent *)e { (void)e; self.tracking = NO; [self setNeedsDisplay:YES]; }
-- (void)mouseDown:(NSEvent *)e { self.hover = [self convertPoint:e.locationInWindow fromView:nil]; self.tracking = YES; [self setNeedsDisplay:YES]; }
-- (void)mouseUp:(NSEvent *)e { (void)e; self.tracking = NO; [self setNeedsDisplay:YES]; }
-- (void)drawRect:(NSRect)dirty {
-    (void)dirty;
-    float w = self.bounds.size.width, h = self.bounds.size.height;
-    if (w < 1 || h < 1) return;
-    float u = dm_touchpad_u(h);
-    float hx = self.hover.x, hy = self.hover.y;
-    [[NSColor colorWithWhite:1 alpha:0.22] setStroke];
-    NSBezierPath *ring = [NSBezierPath bezierPath];
-    // left stick, right stick, d-pad: circles with the highlight when the hover is inside
-    struct { dm_touchpad_point c; float r; } circles[3] = {
-        { dm_touchpad_stick_home(w, h, 0, 0, 0, 0), DM_TP_STICK_R * u },
-        { { w - DM_TP_STICK_X * u, h - DM_TP_PAD_Y * u }, DM_TP_RSTICK_R * u },
-        { dm_touchpad_dpad_center(w, h, 0, 0, 0, 0), DM_TP_DPAD_R * u },
-    };
-    for (int i = 0; i < 3; i++) {
-        [ring removeAllPoints];
-        [ring appendBezierPathWithOvalInRect:NSMakeRect(circles[i].c.x - circles[i].r, circles[i].c.y - circles[i].r, circles[i].r * 2, circles[i].r * 2)];
-        float dx = hx - circles[i].c.x, dy = hy - circles[i].c.y;
-        BOOL in = dx * dx + dy * dy <= circles[i].r * circles[i].r;
-        BOOL hot = in && self.tracking;
-        NSColor *stroke = hot ? [NSColor colorWithRed:0.2 green:0.8 blue:0.35 alpha:0.85] : [NSColor colorWithWhite:1 alpha:0.22];
-        [stroke setStroke];
-        [ring setLineWidth:hot ? 3.0 : 1.5];
-        [ring stroke];
-    }
-    // the four face buttons, highlighted as a set (that is how the iOS pad reports them)
-    uint64_t held = self.tracking ? dm_touchpad_face_buttons(hx, hy, w - DM_TP_FACE_X * u, h - DM_TP_PAD_Y * u, DM_TP_FACE_GAP * u, DM_TP_FACE_R * u) : 0;
-    static const char *names[4] = { "A", "B", "X", "Y" };
-    for (int b = 0; b < 4; b++) {
-        dm_touchpad_point c = dm_touchpad_face_button(w, h, 0, 0, 0, 0, b);
-        BOOL on = (held >> b) & 1;
-        NSColor *fill = on ? [NSColor colorWithRed:0.2 green:0.8 blue:0.35 alpha:0.9] : [NSColor colorWithWhite:1 alpha:0.30];
-        [fill setFill];
-        NSBezierPath *p = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(c.x - DM_TP_FACE_R * u, c.y - DM_TP_FACE_R * u, DM_TP_FACE_R * 2 * u, DM_TP_FACE_R * 2 * u)];
-        [p fill];
-        NSDictionary *attrs = @{ NSFontAttributeName: [NSFont boldSystemFontOfSize:(11 * u > 9 ? 11 * u : 9)],
-                                 NSForegroundColorAttributeName: [NSColor colorWithWhite:0 alpha:0.75] };
-        NSSize s = [@(names[b]) sizeWithAttributes:attrs];
-        [@(names[b]) drawAtPoint:NSMakePoint(c.x - s.width / 2, c.y - s.height / 2) withAttributes:attrs];
-    }
-    // shoulders
-    dm_touchpad_point zl = { DM_TP_ZL_X * u, DM_TP_ZL_Y * u };
-    dm_touchpad_point l = { DM_TP_L_X * u, DM_TP_L_Y * u };
-    dm_touchpad_point r = dm_touchpad_right_shoulder(w, h, 0, 0, 0, 0, 0);
-    dm_touchpad_point zr = dm_touchpad_right_shoulder(w, h, 0, 0, 0, 0, 1);
-    dm_touchpad_point sh[4] = { zl, l, r, zr };
-    for (int i = 0; i < 4; i++) {
-        float rad = DM_TP_ZL_R * u;
-        float dx = hx - sh[i].x, dy = hy - sh[i].y;
-        BOOL in = self.tracking && dx * dx + dy * dy <= rad * rad;
-        NSColor *stroke = in ? [NSColor colorWithRed:0.2 green:0.8 blue:0.35 alpha:0.85] : [NSColor colorWithWhite:1 alpha:0.22];
-        [stroke setStroke];
-        NSBezierPath *p = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(sh[i].x - rad, sh[i].y - rad, rad * 2, rad * 2)];
-        [p setLineWidth:in ? 3.0 : 1.5];
-        [p stroke];
-    }
-}
-@end
-
 @interface DmGameView : NSView @end
 @implementation DmGameView
 - (void)mouseDown:(NSEvent *)e { [self mouseDragged:e]; }
@@ -344,7 +261,7 @@ void front_run(void (*guest)(void)) {
         NSWindow *win = [[NSWindow alloc] initWithContentRect:r
                                                     styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
                                                       backing:NSBackingStoreBuffered defer:NO];
-        win.title = @(dm_profile()->name);   // the game profile's name (game name label)
+        win.title = @DM_GAME_NAME;   // the game profile's name (game name label)
         // Fullscreen: without FullScreenPrimary the green button only zooms the window. The present path already scales
         // the game picture to fit the drawable with black bars around it, so fullscreen keeps the game's aspect ratio.
         win.collectionBehavior = NSWindowCollectionBehaviorFullScreenPrimary;
@@ -356,16 +273,6 @@ void front_run(void (*guest)(void)) {
         g_layer.contentsScale = win.backingScaleFactor;
         if (getenv("DM_METAL_HUD") && atoi(getenv("DM_METAL_HUD"))) { g_layer.developerHUDProperties = @{@"mode": @"default"}; LOG("front end: Metal performance HUD on (DM_METAL_HUD)"); }   // Apple's HUD over the game: frame rate, frame and GPU time, memory
         v.layer = g_layer; [(DmGameView *)v fitDrawable];
-        if (getenv("DM_TOUCH_PREVIEW") && atoi(getenv("DM_TOUCH_PREVIEW"))) {
-            // Over the picture, click-through to the game: the preview only draws, it never takes
-            // the mouse away from the single-point touchscreen below it.
-            DmTouchPreview *tp = [[DmTouchPreview alloc] initWithFrame:v.bounds];
-            tp.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-            tp.wantsLayer = YES;
-            tp.layer.backgroundColor = NSColor.clearColor.CGColor;
-            [v addSubview:tp];
-            LOG("front end: touch preview on (DM_TOUCH_PREVIEW=1) — the virtual pad iOS draws, with the control under the mouse highlighted");
-        }
         [win center];
         [win makeKeyAndOrderFront:nil];
         g_screen_fps = (int)(win.screen ?: NSScreen.mainScreen).maximumFramesPerSecond;
@@ -374,7 +281,7 @@ void front_run(void (*guest)(void)) {
         // Main menu: AppKit runs ⌘ shortcuts only through menu items, so ⌘Q quits and ⌃⌘F toggles fullscreen from here (AppKit shows the item as Globe-F and keeps ⌃⌘F as a hidden twin)
         NSMenu *bar = [NSMenu new], *app = [NSMenu new], *wm = [[NSMenu alloc] initWithTitle:@"Window"];
         [[bar addItemWithTitle:@"" action:nil keyEquivalent:@""] setSubmenu:app];
-        [app addItemWithTitle:[NSString stringWithFormat:@"Quit %s", dm_profile()->name] action:@selector(terminate:) keyEquivalent:@"q"];
+        [app addItemWithTitle:@"Quit " DM_GAME_NAME action:@selector(terminate:) keyEquivalent:@"q"];
         controls_install_menu(bar);
         [[bar addItemWithTitle:@"Window" action:nil keyEquivalent:@""] setSubmenu:wm];
         [wm addItemWithTitle:@"Enter Full Screen" action:@selector(toggleFullScreen:) keyEquivalent:@"f"].keyEquivalentModifierMask = NSEventModifierFlagControl | NSEventModifierFlagCommand;
@@ -454,7 +361,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     dispatch_sync(dispatch_get_main_queue(), ^{
         // The box takes the keyboard and the mouse, so the game window never sees the key-up of the button or the touch-up of the click that opened it: nothing may stay pressed
         // while it is up, or the game reads the stuck button / touch the moment the box closes (Stardew Valley's character creation re-opened the keyboard endlessly)
-        g_btn = 0; g_w = g_a = g_s = g_d = 0; push();
+        g_btn = 0; g_held_fn = 0; push();
         dm_touch_set(NULL, 0);
         int min_chars = g_swkbd_min_chars > 0 ? g_swkbd_min_chars : 0;
         NSString *info = [NSString stringWithFormat:@"%s%s%s", sub ? sub : "", sub && *sub && guide && *guide ? "\n" : "", guide ? guide : ""];

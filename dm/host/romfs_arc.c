@@ -56,7 +56,14 @@ static const filerec *find_file(const char *rel) {
 }
 
 // Binary search the directory table by path. Returns the record or NULL.
+// A trailing slash names the same directory, as it does for opendir(3) on the plain tree: Bayonetta 3 opens "movie/" at boot,
+// and without this the archive said the movie folder did not exist, so the game never started its opening movie on iOS.
 static const dirrec *find_dir(const char *rel) {
+    char trimmed[1024]; size_t n = strlen(rel);
+    if (n && rel[n - 1] == '/' && n < sizeof trimmed) {
+        while (n && rel[n - 1] == '/') n--;
+        memcpy(trimmed, rel, n); trimmed[n] = 0; rel = trimmed;
+    }
     uint64_t lo = 0, hi = A.hdr.dir_count;
     while (lo < hi) {
         uint64_t mid = lo + (hi - lo) / 2;

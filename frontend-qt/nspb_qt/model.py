@@ -37,6 +37,8 @@ class Dep:
     detail: str = ''            # a path, or a localisation key, or "key:arg"
     install: list[str] = field(default_factory=list)   # command that fixes it, empty = manual
     installing: bool = False
+    required: bool = True       # a missing optional row (spirv-cross for Metal games, glslangValidator)
+                                # is not part of "缺 N 项": it does not stop the build in front of you
 
     @property
     def ok(self) -> bool:
@@ -81,6 +83,7 @@ class Model(QObject):
         self.stages: list[Stage] = []
         self.running = False
         self.log_tail = ''
+        self._last_error = ''   # the last real log line: the failure note names it (issue #52)
         self.game_dir = ''
         self.base_path = ''
         self.update_path = ''
@@ -385,24 +388,24 @@ class Model(QObject):
                 out.append(Dep(pid, key, key + '.hint',
                                DepState.OK if p.ok else DepState.MISSING, p.detail))
 
-        # cross-platform tools: spirv-cross and zstd are required, glslang only for GL games.
-        # Titles and hints are the Windows ones here ('brew: …' is the macOS row's wording, and
-        # the report read "brew: spirv-cross" on a handheld); zstd is installable in-app, and
-        # spirv-cross points at the Vulkan SDK — Apple-style gated downloads are not the only
-        # thing this panel cannot fetch silently.
+        # Cross-platform tools. zstd is required (every build unpacks with it) and installable
+        # in-app. spirv-cross is needed only by an OpenGL game and glslangValidator only by that
+        # same path, so neither is required: a Metal title builds without them, and counting them
+        # in "缺 N 项" told a user with a complete Metal toolchain that three things were wrong
+        # (the report's screenshot: only spirv-cross was genuinely absent).
+        #
+        # Both are marked optional but shown in the state they are really in — a green dot on a
+        # tool that is not installed read as "present" and hid the one row worth acting on.
         for pid, key, hint, req, install in (
-                ('spirv-cross', 'dep.spirv.win', 'dep.spirv.hint.win', True, []),
+                ('spirv-cross', 'dep.spirv.win', 'dep.spirv.hint.win', False, []),
                 ('zstd', 'dep.zstd.win', 'dep.zstd.hint.win', True, ['__win__:zstd']),
                 ('glslangValidator', 'dep.glslang', 'dep.glslang.hint', False, [])):
             p = by_id.get(pid)
             if p:
                 d = Dep(pid, key, hint,
-                        DepState.OK if p.ok else DepState.MISSING, p.path if p.ok else '',
-                        install=[] if p.ok else install)
-                if not req:
-                    # an optional tool must not block the build
-                    d.state = DepState.OK if p.ok else DepState.OK
-                    d.detail = p.path if p.ok else self.t('dep.optionalMissing')
+                        DepState.OK if p.ok else DepState.MISSING,
+                        p.path if p.ok else (self.t('dep.optionalMissing') if not req else ''),
+                        install=[] if p.ok else install, required=req)
                 out.append(d)
         # Windows-on-ARM gets a visible note: the tools are x86-64 and run emulated.
         if note := wtc.host_arch_note():
@@ -972,6 +975,7 @@ class Model(QObject):
         self.stages = []
         self.ipa_path = self.archive_path = self.mac_app_path = ''
         self.log_tail = ''
+        self._last_error = ''
         self.stagesChanged.emit()
         self.log(self.t('msg.running', py + ' ' + ' '.join(args)) + '\n')
 
@@ -1023,7 +1027,10 @@ class Model(QObject):
                 if self.stages:
                     self.stages[-1].state = 'failed'
                     self.stagesChanged.emit()
-                self.finished.emit(False, self.t('msg.buildFailed'))
+                # The last real line says more than the exit code: "Build failed (exit code 1)"
+                # on its own sent a reporter looking for a log that was not on screen (#52)
+                last = getattr(self, '_last_error', '')
+                self.finished.emit(False, self.t('msg.buildFailedReason', last) if last else self.t('msg.buildFailed'))
             if staging:
                 shutil.rmtree(staging, ignore_errors=True)
 
@@ -1040,6 +1047,11 @@ class Model(QObject):
         """Feed one line of the build's output: stage lines move the stage list, everything
         else goes to the log (which is what the window shows)."""
         self.log(line + '\n')
+        # The last line that was not stage bookkeeping: a failed build's summary used to be the
+        # bare exit code ("Build failed (exit code 1)"), which told the reporter nothing and sent
+        # them looking for a log that a short window had below the fold (issue #52)
+        if line.strip() and not (line.startswith('[') and ']' in line and line.find(']') + 1 < len(line)):
+            self._last_error = line.strip()[:200]
         if line.startswith('output IPA:'):
             self.ipa_path = line.split(':', 1)[1].strip()
         low = line.lower()
@@ -1078,13 +1090,15 @@ class Model(QObject):
             self.finished.emit(True, self.t('msg.archiveSkipped', str(extract)))
             return
         romfs = str(versions[-1][1] / 'RomFS')
+        # games/<id>/ is the per-game layout main.m looks in first, and the file inside it is
+        # romfs.img — one file, which copies to a phone at full speed where 300,000 did not
         dest = str(Path(self.out_dir or Path(self.base_path).parent, 'romfs'))
         self.stages.append(Stage(name=self.t('prog.archiveShort'), state='running'))
         self.stagesChanged.emit()
 
         def work_() -> None:
-            args = [self.python_path, str(Path(self.repo_path, 'dm', 'tools', 'romfs_arc.py')),
-                    'pack', romfs, str(Path(dest, 'romfs')), '--shard-mib', '200']
+            args = [self.python_path, str(Path(self.repo_path, 'dm', 'tools', 'romfs_image.py')),
+                    '--reuse', romfs, str(Path(dest, 'romfs.img'))]
             env = pu.child_env({'PYTHONPATH': str(Path(self.repo_path, 'dm', 'tools'))})
             ok = True
             try:

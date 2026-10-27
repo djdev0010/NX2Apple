@@ -1,6 +1,9 @@
 <div align="center">
 
-# 🎮 NX2Apple
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="frontend/screenshots/logo-dark.png">
+  <img src="frontend/screenshots/logo-light.png" width="360" alt="NX2Apple, by nxnative">
+</picture>
 
 **Your Switch games, running on your iPhone.**
 
@@ -16,13 +19,13 @@
 [![English](https://img.shields.io/badge/🇺🇸_English-current-blue)](README.md)
 [![简体中文](https://img.shields.io/badge/🇨🇳_简体中文-available-green)](README.zh-CN.md)
 
-<img src="frontend/screenshots/hero-features-en.png" width="100%" alt="NX2Apple — Switch games on your iPhone">
+<img src="frontend/screenshots/hero-features-en.png" width="100%" alt="NX2Apple — Switch games on iPhone and Mac">
 
-> **New in v0.4.5**
->
-> - 🖥️ **Mac app output** — build a double-clickable `.app` instead of an IPA
-> - 📱 **Older iPhones and iPads** — turn on BC texture decoding when building
+#### 🆕 Latest highlights
 
+- **A brand-new GUI** — the Mac launcher is here: manage your game library the way you manage a Switch.
+- **Saves, freed** — every Mac game's saves and logs live together in the game library folder.
+- **iPhone game data, freed** — the game's `.img` data finally loads straight from an external drive on iOS.
 
 A macOS app takes your own game dumps and does the whole thing with a few clicks — unpack, rewrite
 the game's code for Apple silicon, translate its shaders to Metal, pack a slim IPA plus a sharded
@@ -37,62 +40,63 @@ steps to get it onto the device.
 
 ---
 
-## 📖 What this is
+## What this is
 
 This is a community fork of **[nxnative](https://github.com/seedds/nxnative)** — the NSO rewriter,
 the Horizon host, the NVN-on-Metal layer and the per-game profiles are upstream work, and this fork
 follows upstream automatically. What it adds:
 
-- **🖱️ A GUI app for everyone.** [NS Port Builder](frontend/README.md) walks a first-time user
-  through the whole build: four inputs picked separately (or one folder for all), device
-  dependencies detected and installed with one click, progress from the build's own stages, and an
-  install guide with Reveal-in-Finder buttons at the end. English by default; Chinese on Chinese
-  devices. **It also downloads the repository for you and updates itself** — no git knowledge
-  needed.
-- **📦 A RomFS archive.** Tears of the Kingdom's 304,243 files become 127 shards — the difference
+- **A GUI app for everyone.** [nxnative for Mac](frontend/README.md) is a game library and a
+  build tool in one window: pick a game's folder, choose *This Mac* or *iPhone / iPad*, and the build
+  runs with live progress from the script's own counts. Finished Mac games appear in the library with
+  their eShop key art, start with **Play**, and keep per-game launch options (the iPhone launcher's
+  settings: frame rate, console mode, upscaling, …). Device dependencies are detected and installed
+  with one click; English or Chinese, following the system. **It also downloads the repository for you
+  and updates itself** — no git knowledge needed.
+- **A RomFS archive.** Tears of the Kingdom's 304,243 files become 127 shards — the difference
   between an iOS install that fails with `PackageExtractionFailed` and one that works (details
   below).
 - **⏸️ Interrupted builds resume.** Extraction, DLC, module rewrite and shader compilation are kept
   and reused: a failed or stopped build continues where it left off, and a rebuild after a tweak
   reuses everything unchanged (upstream's pipeline; the app drives it with its own build folder).
-- **🔄 Follows upstream automatically.** A daily GitHub Actions job re-applies the fork's features
+- **Follows upstream automatically.** A daily GitHub Actions job re-applies the fork's features
   onto upstream's tree, verifies the result (script parse, archive reader test, a macOS host build)
   and pushes — or opens an issue with the log when a patch no longer fits.
-- **🎯 75 game profiles** with the required update version listed per game. Three are verified end
+- **79 game profiles** with the required update version listed per game. Three are verified end
   to end on this fork; 45 are reported playable on an iPhone upstream.
 
 ---
 
-## 📚 Contents
+## Contents
 
-- [✨ Features at a glance](#features-at-a-glance)
-- [🚀 Quick start](#quick-start)
-- [🎮 Supported games](#supported-games)
-- [🔧 How it works](#how-it-works)
-- [📝 Update history](#update-history)
-- [🤝 Contributing shaders and game support](#contributing-shaders-and-game-support)
-- [⚠️ Limitations](#limitations)
-- [🙏 Credits](#credits)
-- [⚖️ Legal](#legal)
-
----
-
-## ✨ Features at a glance
-
-| | Feature | Notes |
-|---|---|---|
-| 🖱️ | **One-click build** | Pick your files, press build. No command line, ever |
-| 📦 | **RomFS archiving** | 300,000 files → ~100 shards, so a 16 GB game installs |
-| 🔁 | **Resumable builds** | A stopped build continues; unchanged work is reused |
-| 🧩 | **75 game profiles** | Each with the exact update version it needs |
-| 📲 | **Install guide** | The three steps to the phone, with Reveal-in-Finder |
-| 🌏 | **Bilingual** | English / 简体中文, picked from the device language |
-| ⬇️ | **Self-installing** | Downloads the repository and updates itself |
-| 🔄 | **Auto upstream sync** | Daily, verified, with a fallback issue if a patch breaks |
+- [Features at a glance](#features-at-a-glance)
+- [Quick start](#quick-start)
+- [Supported games](#games) — the full table; [verified here](#verified-games) first
+- [How it works](#how-it-works)
+- [Update history](#update-history)
+- [Contributing shaders and game support](#contributing-shaders-and-game-support)
+- [Limitations](#limitations)
+- [Credits](#credits)
+- [Legal](#legal)
 
 ---
 
-## 🚀 Quick start
+## Features at a glance
+
+| Feature | Notes |
+|---|---|
+| **One-click build** | Pick your files, press build. No command line, ever |
+| **RomFS archiving** | 300,000 files → ~100 shards, so a 16 GB game installs |
+| **Resumable builds** | A stopped build continues; unchanged work is reused |
+| **79 game profiles** | Each with the exact update version it needs |
+| **Install guide** | The three steps to the phone, with Reveal-in-Finder |
+| **Bilingual** | English / 简体中文, picked from the device language |
+| **Self-installing** | Downloads the repository and updates itself |
+| **Auto upstream sync** | Daily, verified, with a fallback issue if a patch breaks |
+
+---
+
+## Quick start
 
 1. **Download the app** — [latest release](https://github.com/LNPANDY/NX2Apple/releases/latest)
    (`NS-Port-Builder-macOS-arm64.zip`). Unzip, right-click → Open the first time.
@@ -107,7 +111,7 @@ follows upstream automatically. What it adds:
 
 ---
 
-## 🎮 Supported games
+## Verified games
 
 **3 verified end to end on this fork** (build → install → play on a real iPhone), **29 reported
 playable upstream**, **58 profiles** in total. The full table with the exact update version each
@@ -121,9 +125,9 @@ game needs is [below](#games).
 
 ---
 
-## 🔧 How it works
+## How it works
 
-### 🖥️ The GUI front end
+### The GUI front end
 
 `frontend/` is a macOS app that does steps 2–5 below with a window instead of a terminal, for
 people who would rather not read a build log: four inputs picked separately (base game, update,
@@ -174,23 +178,26 @@ the shard, so the page cache still works.
 ### The GUI front end
 
 `frontend/` is a macOS app that does the build steps with a window instead of a terminal, for
-people who would rather not read a build log: four inputs picked separately (base game, update,
-DLC, `prod.keys`), a dependency panel that detects and installs what is missing, the script's real
-stage list with live percentages, and the archive shards produced at the end.
+people who would rather not read a build log: a library of your games with their key art, a build
+page (one game folder, or base game, update, DLC and `prod.keys` picked separately; Mac or iPhone),
+the script's real stage list with live counts and time left, per-game launch options for Mac builds,
+and a settings page that detects and installs what is missing.
+
+<img src="frontend/screenshots/launcher-library.webp" width="100%" alt="nxnative for Mac: the library, with a build in progress">
 
 <details>
-<summary>界面截图（点开）</summary>
+<summary>Build page and launch options</summary>
 
-<img src="frontend/screenshots/main-window.png" width="620" alt="NS Port Builder">
+<img src="frontend/screenshots/launcher-build.webp" width="66%" alt="Build game"> <img src="frontend/screenshots/launcher-launch-options.webp" width="32%" alt="Launch options">
 
 </details>
 
 ```bash
-cd frontend && swift run          # or double-click frontend/NS Port Builder.app
+cd frontend && swift run          # or double-click frontend/nxnative.app
 ```
 
-The interface is bilingual: it follows the device (Chinese for any Chinese variant, **English for
-everything else**) and the `中文` / `EN` button in the title bar switches at any time.
+The interface is bilingual: it follows the system language (Chinese for any Chinese variant, **English
+for everything else**).
 
 It runs the same scripts the command line does, so everything below still applies; see
 [frontend/README.md](frontend/README.md). The prebuilt app, and the release notes in English and
@@ -198,13 +205,15 @@ Chinese (including which games are verified), are on the
 [releases page](https://github.com/LNPANDY/NX2Apple/releases) and in
 [docs/RELEASE_NOTES.md](docs/RELEASE_NOTES.md).
 
-## 📝 Update history
+## Update history
 
 Newest first. The fork follows upstream daily, so its game list and host fixes arrive automatically.
 
 | Date | Version | What changed |
 |---|---|---|
-| 2026-10-27 | v0.4.7 | **75 game profiles** (+3: Octopath Traveler, Donkey Kong Country Returns HD, Donkey Kong Country: Tropical Freeze) from the daily sync; **one host binary, any game's memory layout** (runtime profiles — the foundation for the universal launcher, which has not been built yet); **the language toggle translates the whole interface**; **Xcode betas count** (the check asks xcode-select); a loud notice when an upstream update invalidates cached shaders; the output folder documented as the build cache's home; Windows front end: in-app Python 3.12, SDK clone past Windows' path-length limit, LLVM verified by compiling rather than --version, no more black console windows; rebuilding on an external exFAT work folder no longer crashes |
+| 2026-10-27 | v0.4.9 | **The library follows the folder**: a Mac game's saves and log live beside the .app and migrate from `~/Library` on first run; **the iPhone's game data can live anywhere** (Files-app picker, remembered); **all eight tracker features landed** (#77–#84: key pre-check, drag & drop, build notifications, older-tools flag, free space, saves between Mac and device, copy diagnostics, controller layouts); Windows: Chinese UI fixed, the Metal probe works under a Chinese user name, the failed-install crash is gone, the Vulkan SDK is found by itself |
+| 2026-10-27 | v0.4.8 | **The Mac launcher becomes usable**: install an iPhone build on a paired device (#28), a controller drives the whole launcher (#56), launch options split into basic and advanced (#54) with Display mode and the render scale in real pixels (#55) and a Mods section through `DM_ROMFS_OVERLAY` (#57), keys and controller buttons remappable (#39); **the build tools update when the app opens** (#60) and **a new version says what it changes** before installing; fixes: every rewrite of every game crashed (`patch_nso.py`'s `TEXT_LO` used before assignment, #59), the Mac app refused every build with "requires Python 3.12" (#53), a ROMs folder holding several games could not build any of them (#58), a failed build pointed at a log that was off screen (#52), a Chinese Windows showed an English interface, CI could not open issues |
+| 2026-10-27 | v0.4.7 | **79 game profiles** (+7: Octopath Traveler, Donkey Kong Country Returns HD, Donkey Kong Country: Tropical Freeze, Mario + Rabbids Sparks of Hope, Kirby and the Forgotten Land, Yoshi's Crafted World, Xenoblade Chronicles 3) from the daily sync; **one host binary, any game's memory layout** (runtime profiles — the foundation for the universal launcher, which has not been built yet); **the language toggle translates the whole interface**; **Xcode betas count** (the check asks xcode-select); a loud notice when an upstream update invalidates cached shaders; the output folder documented as the build cache's home; Windows front end: in-app Python 3.12, SDK clone past Windows' path-length limit, LLVM verified by compiling rather than --version, no more black console windows; rebuilding on an external exFAT work folder no longer crashes |
 | 2026-10-26 | v0.4.6 | **Windows app fixed against real hardware reports**: the missing .NET SDK row (it never appeared, so nothing could install it), no more black console windows stealing the foreground, download mirrors chosen by a speed probe (a 974 s LLVM download on a mainland connection), tools installed outside the app folder so updates stop deleting them, and repository checks that say what git is doing |
 | 2026-10-26 | v0.4.5 | **Mac app output** (a double-clickable .app from the same build); **A15/A16 and earlier devices** via CPU BC decode, as an app switch; per-game data folders (`Documents/games/<id>/`) so an external drive works; NRO header no longer scanned as code; the nightly sync can no longer fail silently |
 | 2026-10-26 | v0.4.4 | **Fixes a build failure that hit every app build in v0.4.3** (`work` read before it was assigned); 72 games (+3) |
@@ -218,7 +227,7 @@ Newest first. The fork follows upstream daily, so its game list and host fixes a
 | 2026-10-20 | v0.2.0 | Bilingual (English / 中文) |
 | 2026-10-20 | v0.1.0 | First release: GUI front end, RomFS archiving |
 
-## 🤝 Contributing shaders and game support
+## Contributing shaders and game support
 
 Each new game needs its own bring-up: a profile (build IDs, memory layout, texture slots), a shader
 reader if it packs them in a form we do not read, and patch points. **Two ways to help, both
@@ -233,7 +242,9 @@ useful:**
 Issues with a full `Documents/log.txt` get looked at first — that log usually names the exact
 missing piece.
 
-## 🔄 Staying current with upstream
+Open an issue with one of the [issue forms](https://github.com/LNPANDY/NX2Apple/issues/new/choose) (game problem, build problem, launcher); [CONTRIBUTING.md](CONTRIBUTING.md) says what a report needs.
+
+## Staying current with upstream
 
 A scheduled GitHub Actions workflow (`.github/workflows/sync-upstream.yml`, daily 21:30 UTC, also
 runnable by hand) follows [seedds/nxnative](https://github.com/seedds/nxnative): it re-applies this
@@ -243,7 +254,7 @@ pushes — or opens an issue with the log when a patch no longer fits, pushing n
 fresh repository rather than a true fork, so GitHub's own "Sync fork" does not apply here; the last
 synced upstream commit lives in `.upstream-ref`.
 
-## 🛠️ Using it
+## Using it
 
 ### 1. Build the app (as upstream)
 
@@ -254,7 +265,7 @@ packages, then pack an IPA.
 ```bash
 git clone https://github.com/<you>/NX2Apple.git
 cd NX2Apple
-brew install xcodegen zstd spirv-cross
+brew install xcodegen zstd spirv-cross glslang   # glslang: OpenGL (LÖVE) games only
 brew install --cask dotnet-sdk
 python3 -m pip install lz4 capstone fonttools backports.zstd
 ```
@@ -355,7 +366,7 @@ The index may sit at any of these places; the reader tries them in order:
 <DM_ROMFS>/romfs/romfs.idx
 ```
 
-## 📲 Playing
+## Playing
 
 **Touch controls.** Two layouts (tap the button at the top centre to switch): 2D (left stick,
 A/B/X/Y, shoulders, − / +) and 3D (adds a D-pad, a right stick and L3 / R3). With no controller
@@ -378,7 +389,7 @@ DM_OPMODE=0            # handheld mode: 720p render instead of the docked 1080p
 goes wrong, send `log.txt` (the previous run is `log.prev.txt`). Short stutters the first time a new
 scene appears are normal: the app compiles graphics for it once and remembers them.
 
-## 🎯 Using it for another game
+## Using it for another game
 
 The archive format has nothing game-specific in it: the packer walks whatever directory you give it
 and the reader looks paths up in that tree. To switch games:
@@ -404,7 +415,7 @@ Three things to watch for:
 Games from upstream's tested list (4–6 GB) need roughly 20–30 shards at 200 MiB, well inside the
 limit, and their memory footprint is far below the per-app budget that stops Tears of the Kingdom.
 
-## 🧩 What changed against upstream
+## What changed against upstream
 
 Five files added, four modified. The fs layer keeps its normal path handling: when an archive is
 open, `host_path_ex` hands out a synthetic path (`@romfsarc:<guest path>`) for entries on the
@@ -430,9 +441,9 @@ past the end would return the next file's bytes).
 The mount is recognised by its **directory**, not its name: titles differ (`rom` for most games,
 `content` for Tears of the Kingdom).
 
-## 🗂️ Games
+## Games
 
-75 game profiles ship with this repository. A profile is what makes a build possible —
+79 game profiles ship with this repository. A profile is what makes a build possible —
 the game's build IDs, memory layout, shader tables and per-game switches — and this fork adds the
 RomFS archive layer on top, so a large game can be installed at all.
 
@@ -456,12 +467,14 @@ update layers over it). "无（v0）" = the base game alone is enough.
 | Hyrule Warriors: Age of Calamity | `01002B00111A2000` | 1.3.0 (v327680) | Playable on an iPhone (upstream) |
 | Celeste | `01002B30028F6000` | 1.4.1.1 (v589824) | Profile present; not verified on a phone |
 | Advance Wars 1+2: Re-Boot Camp | `0100300012F2A000` | 无（v0） | Playable on an iPhone (upstream) |
+| Mario + Rabbids® Sparks of Hope | `0100317013770000` | 1.6.2225577 (v393216) | Profile present; not verified on a phone |
 | Taiko Risshiden V DX | `0100346017304000` | 1.1.1 (v131072) | Playable on an iPhone by touch (upstream) |
 | The Great Ace Attorney Chronicles | `010036E00FB20000` | 无（v0） | Playable on an iPhone (upstream) |
 | FINAL FANTASY TACTICS - The Ivalice Chronicles | `010038B015560000` | 1.4.0 (v393216) | Profile present; not verified on a phone |
 | 13 Sentinels: Aegis Rim | `01003FC01670C000` | 1.10 (v65536) | Playable on an iPhone (upstream) |
 | Bayonetta 3 | `01004A4010FEA000` | 1.2.0 (v131072) | Playable on an iPhone (upstream) |
 | DARK SOULS: REMASTERED | `01004AB00A260000` | 1.0.3 (v196608) | Profile present; not verified on a phone |
+| Kirby and the Forgotten Land | `01004D300C5AE000` | 1.1.0 (v65536) | Profile present; not verified on a phone |
 | Monster Train 2 | `010051701FB46000` | 1.1.1 (v131072) | Playable on an iPhone (upstream) |
 | OCTOPATH TRAVELER 0 | `01005270232F2000` | 1.0.5 (v327680) | Profile present; not verified on a phone |
 | Hades | `0100535012974000` | 1.0.38233 (v589824) | Playable on an iPhone (upstream) |
@@ -469,6 +482,7 @@ update layers over it). "无（v0）" = the base game alone is enough.
 | NieR:Automata The End of YoRHa Edition | `010056B015FE8000` | 1.0.3 (v131072) | Playable on an iPhone (upstream) |
 | OCTOPATH TRAVELER | `010057D006492000` | 1.0.5 (v327680) | Profile present; not verified on a phone |
 | Persona 5 Royal | `01005CA01580E000` | 1.0.2 (v65536) | Playable on an iPhone (upstream) |
+| Yoshi's Crafted World | `01006000040C2000` | 1.0.1 (v65536) | Profile present; not verified on a phone |
 | FINAL FANTASY RESONANCE | `0100606026F12000` | 1.0.1 (v65536) | Playable on an iPhone (upstream) |
 | Big Brain Academy: Brain vs. Brain | `0100620012D6E000` | 1.2.0 (v131072) | Profile present; not verified on a phone |
 | Unicorn Overlord | `010069401ADB8000` | 1.05 (v262144) | Profile present; not verified on a phone |
@@ -479,6 +493,7 @@ update layers over it). "无（v0）" = the base game alone is enough.
 | Animal Crossing: New Horizons | `01006F8002326000` | 3.0.3 (v2228224) | **Verified here** — builds, installs and runs smoothly on an iPhone; 103,645 files into 72 archive shards |
 | AI: THE SOMNIUM FILES - nirvanA Initiative | `0100713016CCC000` | 1.0.2 (v131072) | Playable on an iPhone (upstream) |
 | ASTRAL CHAIN | `01007300020FA000` | 1.0.1 (v65536) | Playable on an iPhone (upstream) |
+| Xenoblade Chronicles 3 | `010074F013262000` | 2.2.1 (v720896) | Profile present; not verified on a phone |
 | Bayonetta | `010076F0049A2000` | 1.1 (v65536) | Playable on an iPhone (upstream) |
 | Bayonetta 2 | `01007960049A0000` | 1.2 (v131072) | Playable on an iPhone (upstream) |
 | Portal | `01007BB017812000` | 1.0.3 (v196608) | Playable on an iPhone (upstream) |
@@ -518,7 +533,7 @@ update layers over it). "无（v0）" = the base game alone is enough.
 | Brain Memory Training Academy | `0100F5D01DA3A000` | 无（v0） | Profile present; not verified on a phone |
 | Super Mario Galaxy 2 | `0100FD8022DAA000` | 1.4.0 (v393216) | Profile present; not verified on a phone |
 
-## ✅ Verified on
+## Verified on
 
 - **Tears of the Kingdom** (0100F2C0115B6000, v1.0.0 + update 1.4.3): 304,243 files packed into 127
   files; all 304,243 byte-compared against the source (`verify: OK`); the game runs from the archive
@@ -544,7 +559,7 @@ to tell from `Documents/log.txt` (resident + headroom: ~3,375 MB = not in effect
 
 <a id="limitations"></a>
 
-## ⚠️ Limitations
+## Limitations
 
 **What to expect before you start:**
 
@@ -565,7 +580,14 @@ to tell from `Documents/log.txt` (resident + headroom: ~3,375 MB = not in effect
 - **No dedup or compression.** Shards are the source bytes verbatim, so `verify` is a plain
   comparison and a repack is deterministic.
 
-## 🙏 Credits
+## Credits
+
+**Community contributors** — this project's code is not one maintainer's output:
+
+- **[v0lumehi](https://github.com/v0lumehi)** — **the Mac front end's launcher** (PR [#27](https://github.com/LNPANDY/NX2Apple/pull/27), 40 files): a game library with key art, per-game launch options, a real progress stream, and a Stop that ends the whole build's process group. The Mac app went from "a build form" to the first version of a launcher that opens like a Switch.
+- **[m1guelpf](https://github.com/m1guelpf)** (Miguel Piedrafita) — two HLE fixes (PRs [#24](https://github.com/LNPANDY/NX2Apple/pull/24) and [#26](https://github.com/LNPANDY/NX2Apple/pull/26)): the missing `EnableAlbumImageTakenNotification` and `CreateWithAdjustableSystemClock` entries plus their snapshot type byte — each would have read a null in games that call them, and each came with a test.
+
+Want on this list? [Contributing](#contributing-shaders-and-game-support) says how to start; reports with a full log and fixes with a test move fastest.
 
 All of the emulation work is other people's. This repository adds the archive subsystem on top:
 
@@ -585,7 +607,7 @@ All of the emulation work is other people's. This repository adds the archive su
 
 `dm/third_party` ships other projects with their licenses ([list](dm/third_party/README.md)).
 
-## ⚖️ Legal
+## Legal
 
 **What this project is.** A build tool for games you already own. It reads dumps you made of your
 own cartridges and purchases, on your own machine, and produces a package for your own device.

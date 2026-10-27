@@ -12,6 +12,9 @@ CARD = '#252a31'        # a card's fill
 CARD_EDGE = '#31373f'   # a card's hairline
 TEXT = '#e6e9ed'
 MUTED = '#8b949e'
+PATH = '#6b7480'    # a filesystem path in a dependency row: dimmer than prose, so the eye
+                    # reads the hint beside it first (the report asked for exactly this)
+HINT = '#9aa4b0'    # a hint or explanation: a step brighter than the path it sits next to
 GREEN = '#34c759'       # ok / done
 ORANGE = '#ff9f0a'      # attention
 RED = '#ff453a'         # missing / failed
@@ -75,8 +78,8 @@ QPushButton#danger {{
 /* ---- labels ---- */
 QLabel#title {{ font-size: 17pt; font-weight: 700; background: transparent; }}
 QLabel#subtitle {{ color: {MUTED}; font-size: 9pt; background: transparent; }}
-QLabel#note {{ color: {MUTED}; font-size: 8pt; background: transparent; }}
-QLabel#mono {{ color: {MUTED}; font-family: Menlo, Consolas, monospace; font-size: 8pt; background: transparent; }}
+QLabel#note {{ color: {HINT}; font-size: 8pt; background: transparent; }}
+QLabel#mono {{ color: {PATH}; font-family: Menlo, Consolas, monospace; font-size: 8pt; background: transparent; }}
 QLabel#ok {{ color: {GREEN}; font-weight: 600; background: transparent; }}
 QLabel#warn {{ color: {ORANGE}; font-weight: 600; }}
 QLabel#bad {{ color: {RED}; font-weight: 600; background: transparent; }}

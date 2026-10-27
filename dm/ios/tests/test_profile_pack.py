@@ -42,7 +42,7 @@ class ProfilePackTests(unittest.TestCase):
                     env['PSO'] = str(pso)
                 # Exercise the actual archive step; only the preceding Xcode build is bypassed.
                 script = (REPO / 'dm/ios/tools/build_ipa.sh').read_text()
-                packing = script[script.index('\nP=Payload/DmIOS.app;'):]
+                packing = script[script.index('\nP=Payload/DmIOS.app\n'):]
                 result = subprocess.run(['/bin/bash', '-c', 'set -u\nt() { :; }; die() { echo "$*" >&2; exit 1; }\n'
                                          'gp() { python3 "$PROFILE_TOOL" "$GAME" "$1"; }\n' + packing],
                                         cwd=root, env=env, capture_output=True, text=True)
@@ -53,7 +53,8 @@ class ProfilePackTests(unittest.TestCase):
                     self.assertEqual(prefix + 'fixture_bp.metallib' in names, included)
                     for name in ('fixture_b.metallib', 'fixture_bv.metallib', 'fixture_b.json'):
                         self.assertIn(prefix + name, names)
-                    self.assertEqual(archive.read('Payload/DmIOS.app/romfs/marker'), b'romfs')
+                    # the fork's slim package: the RomFS stays out of the IPA (DM_FULL_ROMFS=1 packs it)
+                    self.assertFalse(any(n.startswith('Payload/DmIOS.app/romfs') for n in names))
                     self.assertEqual('Payload/DmIOS.app/pso/prebuilt.tsv' in names, with_pso)
 
 

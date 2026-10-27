@@ -44,6 +44,8 @@ int main(int argc, char **argv) {
             if (e[i].is_dir) {
                 CHECK(romfsarc_is_dir(rel), "is_dir '%s'", rel);
                 CHECK(!romfsarc_stat_file(rel, NULL, NULL, NULL), "dir is not a file: '%s'", rel);
+                char slash[1024]; snprintf(slash, sizeof slash, "%s/", rel);   // a trailing slash names the same directory (Bayonetta 3 opens "movie/")
+                CHECK(romfsarc_is_dir(slash) && romfsarc_count(slash) == romfsarc_count(rel), "trailing slash '%s'", slash);
                 if ((size_t)nd == dcap) { dcap *= 2; dirs = realloc(dirs, dcap * sizeof *dirs); }
                 dirs[nd++] = strdup(rel);
             } else {

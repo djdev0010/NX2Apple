@@ -46,6 +46,9 @@ class MainWindow(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        # kept so a failed build can scroll the log into view: the message says "see the log
+        # below", and on a window shorter than about 600 px the log sits below the fold (issue #52)
+        self.scroll = scroll
         body = QWidget()
         body.setObjectName('body')
         self.body = QVBoxLayout(body)
@@ -373,9 +376,13 @@ class MainWindow(QMainWindow):
             h = QHBoxLayout(row)
             h.setContentsMargins(0, 0, 0, 0)
             h.setSpacing(6)
-            mark = QLabel('●' if d.ok else ('◐' if d.state is DepState.OLD else '✕'))
+            # An optional tool that is missing reads as a muted ○, not a red ✕: it does not block
+            # the build in front of the player, and the red row made a complete Metal toolchain look
+            # broken (the report's screenshot: spirv-cross and glslangValidator, both OpenGL-only).
+            optional_missing = not d.ok and not getattr(d, 'required', True)
+            mark = QLabel('●' if d.ok else ('◐' if d.state is DepState.OLD else ('○' if optional_missing else '✕')))
             mark.setFixedWidth(14)
-            mark.setStyleSheet(f'color: {GREEN if d.ok else (ORANGE if d.state is DepState.OLD else RED)};')
+            mark.setStyleSheet(f'color: {GREEN if d.ok else (MUTED if optional_missing else (ORANGE if d.state is DepState.OLD else RED))};')
             h.addWidget(mark)
             name = QLabel(self.m.t(d.title_key))
             name.setFixedWidth(140)
@@ -417,8 +424,19 @@ class MainWindow(QMainWindow):
                 self.deps_summary.setText('●  ' + self.m.t('dep.allReady'))
                 self.deps_summary.setStyleSheet(f'color: {GREEN}; font-weight: 600;')
             else:
-                n = sum(1 for d in self.m.deps if not d.ok)
-                self.deps_summary.setText(self.m.t('dep.missing', n))
+                # Required only: an optional tool (glslangValidator for OpenGL games) or one that
+                # only some titles need (spirv-cross) was counted here, so a machine that could
+                # build the game in front of it read "缺 3 项" and looked broken.
+                n = sum(1 for d in self.m.deps if not d.ok and getattr(d, 'required', True))
+                optional = sum(1 for d in self.m.deps if not d.ok and not getattr(d, 'required', True))
+                if n == 0 and optional:
+                    # nothing is actually blocking: saying "缺 0 项（另有 2 项可选）" reads like a
+                    # problem where there is none
+                    self.deps_summary.setText(self.m.t('dep.onlyOptional', optional))
+                    self.deps_summary.setStyleSheet(f'color: {GREEN}; font-weight: 600;')
+                    return
+                self.deps_summary.setText(self.m.t('dep.missingOptional', n, optional) if optional
+                                          else self.m.t('dep.missing', n))
                 self.deps_summary.setStyleSheet(f'color: {RED}; font-weight: 600;')
         else:
             self.deps_summary.setText(self.m.t('dep.checking'))
@@ -477,6 +495,9 @@ class MainWindow(QMainWindow):
         # updated it — the footer was English after the toggle.
         if running:
             self.footer.setText('')
+        elif getattr(self, '_failed', False):
+            pass          # a failure message stays until the next build: it was being replaced by
+                          # the input reminder on the refresh that follows the failure (issue #52)
         elif not self.m.base_path:
             self.footer.setText(self.m.t('status.needInputs'))
         elif not self.m.repo_ok:
@@ -510,6 +531,12 @@ class MainWindow(QMainWindow):
             msg = note or self.m.t('msg.buildFailed')
             self.footer.setStyleSheet(f'color: {RED};')
         self.footer.setText(msg)
+        self._failed = not ok
+        if not ok:
+            # The message points at the log, so put it in view rather than trusting the window to
+            # be tall enough. ensureWidgetVisible also handles the scroll area's own margin.
+            self.scroll.ensureWidgetVisible(self.log, 0, 0)
+            self.log.setFocus(Qt.OtherFocusReason)
         self._refresh_running()
 
     # ---------------------------------------------------------------- actions
@@ -524,6 +551,7 @@ class MainWindow(QMainWindow):
         else:
             self.footer.setText('')
             self.footer.setStyleSheet('')
+            self._failed = False
             self.m.start_build()
 
     def _choose_repo(self) -> None:

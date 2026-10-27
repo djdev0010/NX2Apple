@@ -18,7 +18,7 @@ jobs:
   sync:
     runs-on: macos-latest   # the host build needs clang + macOS headers
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Fetch upstream
         run: |
@@ -49,10 +49,12 @@ jobs:
         if: failure()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # -R, because the `upstream` remote added above makes gh resolve the target repository as
+        # seedds/nxnative, where this token cannot write (daily-health.yml has the full note).
         run: |
           NEW=$(git rev-parse upstream/main 2>/dev/null || echo '?')
           tail -40 sync.log > sync-tail.log 2>/dev/null || echo "see the workflow log" > sync-tail.log
-          gh issue create --title "Upstream sync failed at ${NEW:0:7}" \
+          gh issue create -R "${{ github.repository }}" --title "Upstream sync failed at ${NEW:0:7}" \
             --body "The scheduled sync could not re-apply the fork's patches or verify the build. The tree is untouched on main; run scripts/sync_upstream.py locally to see the full picture.
 
           \`\`\`

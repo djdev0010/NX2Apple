@@ -64,6 +64,93 @@ private struct SettingRow: View {
     }
 }
 
+/// Where this game's data comes from, and a picker to change it.
+///
+/// The app can only read files it owns unless the player hands it a location through the document
+/// picker — so a game's RomFS kept on an external drive or in iCloud Drive could not be used at all
+/// before this. Picking an image (romfs.img) or a folder stores a bookmark (DataBookmark.m), and
+/// romfs_locate() prefers it from the next launch on.
+private struct GameDataSection: View {
+    @State private var picked: String = ""
+    @State private var note: String = ""
+    @State private var picking = false
+
+    var body: some View {
+        Section {
+            HStack {
+                Text("Game data")
+                Spacer()
+                Text(picked.isEmpty ? "This app's folder" : (picked as NSString).lastPathComponent)
+                    .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+            }
+            Button(picked.isEmpty ? "Choose game data…" : "Choose a different location…") { picking = true }
+            if !picked.isEmpty {
+                Button("Use the app's own data again", role: .destructive) {
+                    dm_clear_picked_data(); refresh(); note = ""
+                }
+            }
+        } footer: {
+            Text(note.isEmpty
+                 ? "Pick the game's romfs.img or its RomFS folder — an external drive or iCloud Drive works. The app remembers the choice; a re-signed build asks once more."
+                 : note)
+        }
+        .sheet(isPresented: $picking) {
+            DocumentPicker { url in
+                picking = false
+                if dm_store_picked_data(url) {
+                    note = "Saved. The game uses this location when you press Play."
+                    refresh()
+                } else {
+                    note = "That location could not be remembered — try a different one."
+                }
+            } onCancel: { picking = false }
+        }
+        .onAppear(perform: refresh)
+    }
+
+    private func refresh() {
+        // ObjC BOOL* is ObjCBool, not Bool: the bookmark header takes an indirect flag for
+        // "the bookmark exists but does not resolve under this signature", which is the one
+        // state worth telling the player about.
+        var stale: ObjCBool = false
+        picked = dm_picked_data_path(&stale) ?? ""
+        if stale.boolValue && picked.isEmpty {
+            note = "The location you picked before is no longer readable (the app was signed differently). Please choose it again."
+        }
+    }
+}
+
+/// UIDocumentPickerViewController for files and folders, in the two callbacks a SwiftUI sheet wants.
+private struct DocumentPicker: UIViewControllerRepresentable {
+    let onPick: (URL) -> Void
+    let onCancel: () -> Void
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        // .open (not .import): the file stays where it is and the bookmark keeps pointing at it,
+        // which is the whole point — an import would copy 16 GB into the app's container.
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: false)
+        picker.allowsMultipleSelection = false
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ vc: UIDocumentPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick, onCancel: onCancel) }
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let onPick: (URL) -> Void
+        let onCancel: () -> Void
+        init(onPick: @escaping (URL) -> Void, onCancel: @escaping () -> Void) {
+            self.onPick = onPick; self.onCancel = onCancel
+        }
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            if let url = urls.first { onPick(url) } else { onCancel() }
+        }
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { onCancel() }
+    }
+}
+
 private struct LauncherView: View {
     @ObservedObject var m: LauncherModel
     let play: () -> Void
@@ -98,6 +185,7 @@ private struct LauncherView: View {
                     } footer: {
                         Text("Brings back all settings this game was tested with.")
                     }
+                    GameDataSection()
                     Section {
                         HStack {
                             Text("Memory available")

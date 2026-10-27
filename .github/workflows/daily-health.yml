@@ -21,7 +21,7 @@ jobs:
   check:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0   # the patcher check compares against upstream/main
 
@@ -71,8 +71,13 @@ jobs:
         if: failure()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # -R is not optional: the job adds an `upstream` remote (seedds/nxnative) to fetch, and gh
+        # picks its target repository by remote — the second one, not origin — so without this the
+        # issue went to upstream, where this token has no write access ("Resource not accessible by
+        # integration (createIssue)", 2026-10-27). A probe with the same permissions created the
+        # issue on the first try once -R named the fork.
         run: |
-          gh issue create \
+          gh issue create -R "${{ github.repository }}" \
             --title "Daily health check failed $(date -u +%Y-%m-%d)" \
             --body "The daily check found a problem. Nothing was changed — the tree on main is as it was.
 

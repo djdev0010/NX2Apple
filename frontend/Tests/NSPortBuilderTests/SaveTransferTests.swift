@@ -1,0 +1,288 @@
+import XCTest
+@testable import NSPortBuilder
+
+/// Issue #66: the save copied between the Mac and a device. devicectl is a stand-in that serves a folder as the app's data
+/// container, so no test reaches a device, and the Mac side is a temporary folder, never the real Application Support.
+final class SaveTransferTests: XCTestCase {
+    private var temporary: URL!
+    private let titleID = "0100535012974000"
+    private let fm = FileManager.default
+
+    override func setUpWithError() throws {
+        temporary = fm.temporaryDirectory.appendingPathComponent("nxnative-saves-" + UUID().uuidString)
+        try fm.createDirectory(at: temporary, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws { try fm.removeItem(at: temporary) }
+
+    /// A device's app data container as a folder. `nested` copies a folder into the destination instead of as it, the other
+    /// reading of devicectl's --destination; `failCopyFrom` makes every copy from the device fail.
+    final class FakeDevice {
+        let container: URL
+        var reachable = true, nested = false, failCopyFrom = false
+        var calls: [[String]] = []
+        init(_ container: URL) { self.container = container }
+
+        func value(_ flag: String, _ args: [String]) -> String? { args.firstIndex(of: flag).map { args[$0 + 1] } }
+
+        var control: DeviceControl {
+            DeviceControl { [self] args in
+                calls.append(args)
+                guard reachable else { return (false, "ERROR: The device is not connected. (com.apple.dt.CoreDeviceError error 4)") }
+                let fm = FileManager.default
+                switch Array(args.prefix(3)) {
+                case ["device", "info", "files"]:
+                    let dir = container.appendingPathComponent(value("--subdirectory", args)!)
+                    guard fm.fileExists(atPath: dir.path) else { return (false, "ERROR: The file couldn't be opened because there is no such file.") }
+                    let iso = ISO8601DateFormatter()
+                    iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                    var files: [[String: Any]] = []
+                    for case let url as URL in fm.enumerator(at: dir, includingPropertiesForKeys: nil)! {
+                        let v = try! url.resourceValues(forKeys: [.isDirectoryKey, .contentModificationDateKey])
+                        files.append(["name": url.lastPathComponent, "fileType": v.isDirectory! ? "directory" : "file",
+                                      "modificationDate": iso.string(from: v.contentModificationDate!)])
+                    }
+                    let json = try! JSONSerialization.data(withJSONObject: ["info": ["outcome": "success"], "result": ["files": files]])
+                    try! json.write(to: URL(fileURLWithPath: value("--json-output", args)!))
+                    return (true, "")
+                case ["device", "copy", "from"]:
+                    let source = container.appendingPathComponent(value("--source", args)!)
+                    var destination = URL(fileURLWithPath: value("--destination", args)!)
+                    guard !failCopyFrom, fm.fileExists(atPath: source.path) else { return (false, "ERROR: copy failed") }
+                    if nested {
+                        try! fm.createDirectory(at: destination, withIntermediateDirectories: true)
+                        destination.appendPathComponent(source.lastPathComponent)
+                    }
+                    try! fm.copyItem(at: source, to: destination)
+                    return (true, "")
+                case ["device", "copy", "to"]:
+                    let destination = container.appendingPathComponent(value("--destination", args)!)
+                    if value("--remove-existing-content", args) == "true" { try? fm.removeItem(at: destination) }
+                    try! fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try! fm.copyItem(at: URL(fileURLWithPath: value("--source", args)!), to: destination)
+                    return (true, "")
+                default:
+                    return (false, "unexpected")
+                }
+            }
+        }
+    }
+
+    private func write(_ text: String, _ url: URL, date: Date) throws {
+        try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(text.utf8).write(to: url)
+        try fm.setAttributes([.modificationDate: date], ofItemAtPath: url.path)
+    }
+
+    private func read(_ url: URL) -> String? { (try? Data(contentsOf: url)).map { String(decoding: $0, as: UTF8.self) } }
+
+    private func setUp(device: FakeDevice) -> SaveTransfer {
+        let mac = SaveTransfer.legacyMacSave(titleID: titleID, support: temporary.appendingPathComponent("Application Support"))
+        var t = SaveTransfer(titleID: titleID, macSave: mac, device: "00008150-AAAA", bundle: "com.example.game", devicectl: device.control)
+        t.scratch = temporary
+        t.now = { Date(timeIntervalSince1970: 1_800_000_000) }
+        return t
+    }
+
+    /// The launcher's layout: <folder>/<id>.app beside <folder>/games keeps its save in <folder>/save/<id> (launcher.c), and
+    /// reads the ~/Library save only until it has brought it across. A bundle anywhere else keeps ~/Library.
+    func testTheMacSaveFollowsTheAppWhenItsFolderHoldsGames() throws {
+        let support = temporary.appendingPathComponent("Application Support")
+        let library = temporary.appendingPathComponent("Games")
+        let app = library.appendingPathComponent("\(titleID).app")
+        try fm.createDirectory(at: app, withIntermediateDirectories: true)
+        XCTAssertNil(SaveTransfer.macSave(titleID: titleID, appPath: app.path, support: support).legacy, "no games/ beside it: ~/Library")
+        try fm.createDirectory(at: library.appendingPathComponent("games"), withIntermediateDirectories: true)
+        let paths = SaveTransfer.macSave(titleID: titleID, appPath: app.path, support: support)
+        XCTAssertEqual(paths.save.path, library.path + "/save/" + titleID)
+        XCTAssertEqual(SaveTransfer.macPath("save_device", save: paths.save).path, library.path + "/save/" + titleID + "_device")
+
+        var t = SaveTransfer(titleID: titleID, macSave: paths.save, legacySave: paths.legacy, device: "00008150-AAAA", bundle: "com.example.game",
+                             devicectl: FakeDevice(temporary.appendingPathComponent("container")).control)
+        t.scratch = temporary
+        try write("old", SaveTransfer.legacyMacSave(titleID: titleID, support: support).appendingPathComponent("data.bin"), date: older)
+        XCTAssertEqual(t.readMac(), SaveTransfer.Contents(folders: ["save"], newest: older), "the ~/Library save, until the app copies it")
+        try write("new", paths.save.appendingPathComponent("data.bin"), date: newer)
+        XCTAssertEqual(t.readMac(), SaveTransfer.Contents(folders: ["save"], newest: newer), "then the one beside the app")
+        XCTAssertEqual(t.backups.path, library.path + "/save/" + titleID + "-backups")
+    }
+
+    private let older = Date(timeIntervalSince1970: 1_700_000_000), newer = Date(timeIntervalSince1970: 1_760_000_000)
+
+    func testTheMacSaveIsTheLaunchersFolderAndItsNewestFile() throws {
+        let support = temporary.appendingPathComponent("Application Support")
+        XCTAssertEqual(SaveTransfer.macSave(titleID: titleID, appPath: "", support: support).save.path, support.path + "/nxnative/" + titleID + "/save")
+        let t = setUp(device: FakeDevice(temporary.appendingPathComponent("container")))
+        XCTAssertEqual(t.readMac(), SaveTransfer.Contents(), "no save yet")
+        try fm.createDirectory(at: t.mac.appendingPathComponent("save"), withIntermediateDirectories: true)
+        XCTAssertEqual(t.readMac(), SaveTransfer.Contents(), "an empty save folder is no save")
+        try write("a", t.mac.appendingPathComponent("save/slot0/data.bin"), date: older)
+        try write("b", t.mac.appendingPathComponent("save_device/common.bin"), date: newer)
+        try write("c", t.mac.appendingPathComponent("save.work/uncommitted.bin"), date: Date())   // a session's copy, not the save
+        XCTAssertEqual(t.readMac(), SaveTransfer.Contents(folders: ["save", "save_device"], newest: newer))
+    }
+
+    func testTheDeviceSaveIsReadFromTheGamesFolderInTheContainer() throws {
+        let device = FakeDevice(temporary.appendingPathComponent("container"))
+        let t = setUp(device: device)
+        let game = device.container.appendingPathComponent("Documents/games/" + titleID)
+        try write("img", game.appendingPathComponent("romfs.img"), date: older)
+        XCTAssertEqual(try t.readDevice(), SaveTransfer.Contents(), "installed, never saved")
+        try write("d", game.appendingPathComponent("save/data.bin"), date: newer)
+        XCTAssertEqual(try t.readDevice(), SaveTransfer.Contents(folders: ["save"], newest: newer))
+        for call in device.calls {
+            XCTAssertEqual(device.value("--domain-type", call), "appDataContainer")
+            XCTAssertEqual(device.value("--domain-identifier", call), "com.example.game")
+            XCTAssertEqual(device.value("--device", call), "00008150-AAAA")
+        }
+        device.reachable = false
+        XCTAssertThrowsError(try t.readDevice()) { error in
+            XCTAssertEqual(error as? SaveTransfer.Failure, .device("ERROR: The device is not connected. (com.apple.dt.CoreDeviceError error 4)"))
+        }
+    }
+
+    func testDeviceToMacBacksUpTheMacSaveAndReplacesIt() throws {
+        let device = FakeDevice(temporary.appendingPathComponent("container"))
+        let t = setUp(device: device)
+        try write("device save", device.container.appendingPathComponent("Documents/games/\(titleID)/save/data.bin"), date: newer)
+        try write("mac save", t.mac.appendingPathComponent("save/data.bin"), date: older)
+        try write("mac only", t.mac.appendingPathComponent("save/extra.bin"), date: older)
+        let backup = try XCTUnwrap(try t.deviceToMac())
+        XCTAssertEqual(backup.path, t.backups.path + "/\(stamp(1_800_000_000)) mac")
+        XCTAssertEqual(read(backup.appendingPathComponent("save/data.bin")), "mac save")
+        XCTAssertEqual(read(backup.appendingPathComponent("save/extra.bin")), "mac only")
+        XCTAssertEqual(read(t.mac.appendingPathComponent("save/data.bin")), "device save")
+        XCTAssertFalse(fm.fileExists(atPath: t.mac.appendingPathComponent("save/extra.bin").path), "the save is the device's, nothing older beside it")
+        let left = try fm.contentsOfDirectory(atPath: t.mac.path).sorted()
+        XCTAssertEqual(left, ["save", "save-backups"], "the incoming folder is gone")
+        // A second copy in the same second gets a folder of its own
+        let second = try XCTUnwrap(try t.deviceToMac())
+        XCTAssertEqual(second.lastPathComponent, backup.lastPathComponent + " 2")
+        XCTAssertEqual(read(second.appendingPathComponent("save/data.bin")), "device save")
+    }
+
+    func testDeviceToMacWithoutADeviceSaveLeavesTheMacAlone() throws {
+        let device = FakeDevice(temporary.appendingPathComponent("container"))
+        let t = setUp(device: device)
+        try write("img", device.container.appendingPathComponent("Documents/games/\(titleID)/romfs.img"), date: older)
+        try write("mac save", t.mac.appendingPathComponent("save/data.bin"), date: older)
+        XCTAssertThrowsError(try t.deviceToMac()) { XCTAssertEqual($0 as? SaveTransfer.Failure, .noDeviceSave) }
+        XCTAssertEqual(read(t.mac.appendingPathComponent("save/data.bin")), "mac save")
+        XCTAssertFalse(fm.fileExists(atPath: t.backups.path))
+        // A copy that fails partway leaves the Mac save too
+        try write("device save", device.container.appendingPathComponent("Documents/games/\(titleID)/save/data.bin"), date: newer)
+        device.failCopyFrom = true
+        XCTAssertThrowsError(try t.deviceToMac())
+        XCTAssertEqual(read(t.mac.appendingPathComponent("save/data.bin")), "mac save")
+        XCTAssertEqual(try fm.contentsOfDirectory(atPath: t.mac.path), ["save"])
+    }
+
+    func testMacToDeviceCopiesTheDeviceSaveToTheMacFirst() throws {
+        let device = FakeDevice(temporary.appendingPathComponent("container"))
+        let t = setUp(device: device)
+        let game = device.container.appendingPathComponent("Documents/games/\(titleID)")
+        try write("img", game.appendingPathComponent("romfs.img"), date: older)
+        try write("device save", game.appendingPathComponent("save/data.bin"), date: older)
+        try write("device stale", game.appendingPathComponent("save/stale.bin"), date: older)
+        try write("mac save", t.mac.appendingPathComponent("save/data.bin"), date: newer)
+        let backup = try XCTUnwrap(try t.macToDevice())
+        XCTAssertTrue(backup.lastPathComponent.hasSuffix(" device"))
+        XCTAssertEqual(read(backup.appendingPathComponent("save/data.bin")), "device save")
+        XCTAssertEqual(read(backup.appendingPathComponent("save/stale.bin")), "device stale")
+        XCTAssertEqual(read(game.appendingPathComponent("save/data.bin")), "mac save")
+        XCTAssertFalse(fm.fileExists(atPath: game.appendingPathComponent("save/stale.bin").path))
+        XCTAssertEqual(read(game.appendingPathComponent("romfs.img")), "img", "the game files beside the save stay")
+        let copyTo = try XCTUnwrap(device.calls.first { $0.prefix(3) == ["device", "copy", "to"] })
+        XCTAssertEqual(device.value("--destination", copyTo), "Documents/games/\(titleID)/save", "never the game's folder, which holds romfs.img")
+        XCTAssertEqual(device.value("--source", copyTo), t.mac.appendingPathComponent("save").path)
+    }
+
+    func testMacToDeviceReplacesNothingWhenTheBackupFails() throws {
+        let device = FakeDevice(temporary.appendingPathComponent("container"))
+        let t = setUp(device: device)
+        let game = device.container.appendingPathComponent("Documents/games/\(titleID)")
+        try write("device save", game.appendingPathComponent("save/data.bin"), date: older)
+        try write("mac save", t.mac.appendingPathComponent("save/data.bin"), date: newer)
+        device.failCopyFrom = true
+        XCTAssertThrowsError(try t.macToDevice())
+        XCTAssertEqual(read(game.appendingPathComponent("save/data.bin")), "device save")
+        XCTAssertFalse(device.calls.contains { $0.prefix(3) == ["device", "copy", "to"] })
+        // No Mac save: nothing is asked of the device at all
+        try fm.removeItem(at: t.mac.appendingPathComponent("save"))
+        device.calls = []
+        XCTAssertThrowsError(try t.macToDevice()) { XCTAssertEqual($0 as? SaveTransfer.Failure, .noMacSave) }
+        XCTAssertTrue(device.calls.isEmpty)
+        // A device that is not reachable: the copy stops before anything is replaced
+        device.failCopyFrom = false
+        device.reachable = false
+        try write("mac save", t.mac.appendingPathComponent("save/data.bin"), date: newer)
+        XCTAssertThrowsError(try t.macToDevice())
+        XCTAssertEqual(device.calls.count, 1)
+    }
+
+    func testACopyNestedInItsDestinationIsTheSaveFolderAllTheSame() throws {
+        let device = FakeDevice(temporary.appendingPathComponent("container"))
+        device.nested = true
+        let t = setUp(device: device)
+        try write("device save", device.container.appendingPathComponent("Documents/games/\(titleID)/save/sub/data.bin"), date: newer)
+        _ = try t.deviceToMac()
+        XCTAssertEqual(read(t.mac.appendingPathComponent("save/sub/data.bin")), "device save")
+    }
+
+    func testTheListingsDatesAreReadWhereverTheyAreNested() throws {
+        let json = """
+        {"info": {"outcome": "success"}, "result": {"files": [
+          {"name": "save", "fileType": "directory", "modificationDate": "2030-01-01T00:00:00Z"},
+          {"name": "a.bin", "fileType": "file", "metadata": {"modificationDate": "2025-05-01T10:00:00.250Z"}},
+          {"name": "b.bin", "fileType": "file", "modificationDate": "2025-06-01T10:00:00Z"}
+        ]}}
+        """
+        let parsed = try XCTUnwrap(SaveTransfer.parseListing(Data(json.utf8)))
+        XCTAssertEqual(parsed.files, 2, "the directory is not a file")
+        XCTAssertEqual(parsed.newest, ISO8601DateFormatter().date(from: "2025-06-01T10:00:00Z"))
+        XCTAssertNil(SaveTransfer.parseListing(Data("not json".utf8)))
+        XCTAssertEqual(SaveTransfer.parseListing(Data(#"{"result": {"files": []}}"#.utf8))?.files, 0)
+        XCTAssertEqual(SaveTransfer.date(1_700_000_000.0), Date(timeIntervalSince1970: 1_700_000_000))
+        XCTAssertEqual(SaveTransfer.date(700_000_000.0), Date(timeIntervalSinceReferenceDate: 700_000_000))
+    }
+
+    func testTheNewerSaveIsMarked() {
+        XCTAssertNil(SaveTransfer.newer(mac: nil, device: nil))
+        XCTAssertEqual(SaveTransfer.newer(mac: older, device: nil), .mac)
+        XCTAssertEqual(SaveTransfer.newer(mac: nil, device: older), .device)
+        XCTAssertEqual(SaveTransfer.newer(mac: older, device: newer), .device)
+        XCTAssertEqual(SaveTransfer.newer(mac: newer, device: older), .mac)
+        XCTAssertNil(SaveTransfer.newer(mac: older, device: older.addingTimeInterval(1)), "written together")
+    }
+
+    func testARunningBuildOfTheGameIsFoundByItsTitleID() throws {
+        func app(_ name: String, _ id: String?) throws -> URL {
+            let url = temporary.appendingPathComponent(name + ".app")
+            try fm.createDirectory(at: url.appendingPathComponent("Contents"), withIntermediateDirectories: true)
+            let info: [String: Any] = id.map { ["DMTitleID": $0] } ?? ["CFBundleName": name]
+            try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0).write(to: url.appendingPathComponent("Contents/Info.plist"))
+            return url
+        }
+        let other = try app("Other", "01007EF00011E000"), finder = try app("Finder", nil), game = try app("Hades", titleID.lowercased())
+        XCTAssertFalse(SaveTransfer.running(titleID: titleID, apps: [other, finder]))
+        XCTAssertTrue(SaveTransfer.running(titleID: titleID, apps: [other, finder, game]))
+    }
+
+    func testDevicectlsLastErrorLineIsTheMessage() {
+        XCTAssertEqual(SaveTransfer.lastLine("Acquired tunnel\nERROR: Failed to copy\n  underlying: x\n"), "ERROR: Failed to copy")
+        XCTAssertEqual(SaveTransfer.lastLine("one\ntwo\n"), "two")
+        XCTAssertEqual(SaveTransfer.lastLine(""), "devicectl")
+    }
+
+    private func stamp(_ seconds: TimeInterval) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd HH.mm.ss"
+        return f.string(from: Date(timeIntervalSince1970: seconds))
+    }
+}
+
+private extension SaveTransfer {
+    /// The ~/Library layout's game folder, which holds save, save_device and save-backups side by side
+    var mac: URL { macSave.deletingLastPathComponent() }
+}

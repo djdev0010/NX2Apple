@@ -1,120 +1,77 @@
-# NS Port Builder v0.4.0 — release notes
+# NX2Apple v0.5.0 — release notes
 
-This is the text of the [v0.4.0 release](https://github.com/LNPANDY/NX2Apple/releases/tag/v0.4.0). Earlier releases (v0.3.x, v0.2.x, v0.1.0) are on the releases page; their links redirect through the rename. 中文说明在英文下方。
+This is the text of the [v0.5.0 release](https://github.com/LNPANDY/NX2Apple/releases/tag/v0.5.0). Earlier releases are on the releases page. English first, then Chinese, as two complete halves — see RELEASE-NOTES-GUIDE.md.
 
-Three releases in one: a GUI that carries a first-time user from NSPs to a working install, an automated link to upstream, and the recovery of two features a sync had silently dropped.
+## What this release does
 
-<details>
-<summary>Screenshot (click to expand)</summary>
+**The Mac launcher arrives, and the iPhone's game data finally sticks.** The launcher is a real console-style screen now: launch options live in the game's own saved-choices store (the same one upstream reads), the library's Manage menu opens with a controller, and a bare Apple ID — no development certificate — can install, because Xcode creates everything at the first install. On the iPhone, choosing game data works across launches, an app with no data yet boots into the launcher instead of a dead end, a pick applies the moment Play is pressed, and the installer asks before copying gigabytes over USB. The build tools update themselves, even from an old ZIP copy.
 
-<img src="../frontend/screenshots/main-window-en.png" width="620" alt="NS Port Builder">
+## New
 
-</details>
+- **Launch options live in the game's own store**: one string per setting (`launcher.<VAR>`) in the app's preferences domain, exactly where upstream's launcher reads them — Finder and Dock starts included. Only non-default values are kept, an earlier launcher's choices migrate once, and schema 1 is read properly: sub-settings appear only when their parent has the value (`needs`), sections the launcher has no name for draw after the known ones in list order, and range limits come from the row. A newer schema is read as far as it can be and noted in the log, never refused.
+- **The library's Manage menu in the launcher's own style** — and a controller can open and drive it.
+- **Build tools update themselves**: a ZIP copy of an old release is connected to git by itself when the app opens (your own edits are preserved on a branch), and a build refuses to start when the tools are older than the app instead of failing at the last step.
+- **Install with just an Apple ID**: signing teams come from Xcode's provisioning preferences (personal teams are labelled), merged with the certificates'. With no certificate at all, Xcode creates one at the first install (`-allowProvisioningUpdates`); the messages say so, and with neither an Apple ID nor a certificate they say exactly where to sign in.
+- **The installer asks before copying game files**: USB from the Mac runs at about 25–70 MB/s, so the dialog offers transfer now or skip — the game installs either way, and the outcome card gains a "Game data (romfs.img)" row with Reveal in Finder for a manual copy (a fast external drive handed to the device is quicker; the launcher's Game data picker loads from it).
+- **Issue forms**: game, build and launcher problems each ask for what a report needs (versions, device, Copy diagnostics, the game's log) and refuse to submit without it; a PR template and CONTRIBUTING.md set the same rules for tools.
 
-## New: the archive folder is ready to copy, with an install guide
+## Fixes
 
-The shards now land in a **`romfs/` folder** — `romfs.idx` plus the shards — next to the NSPs. That is exactly the layout the game app's `Documents/romfs` wants, so the folder is copied onto the phone **without renaming**. A previous pack's shards are cleared first, so a smaller new pack never leaves stale files behind.
+- **iPhone: choosing game data sticks.** The bookmark is written while the Files app's security scope is held (one written without it resolves to nothing from the next launch on — every pick read as "the app was signed differently"), saved only after a round-trip resolves, and a stale-but-readable bookmark rewrites itself instead of making you pick again. The resolved scope stays held for the session, since the game reads the image the whole time.
+- **iPhone: no game data is no dead end.** A fresh install with nothing in Documents and no pick ever made boots into the launcher (the old build stopped on a static "Game files not found" page that never mentioned the picker), and Play (re)locates the data first — a pick made this session applies at once, with save/temp following the final location. An app without a launcher falls back to the static hint.
+- **iPhone: the signing retry keeps its stage row.** The team-variant retry appended a second "Sign for …" row with the same id that no update ever reached; it spun for ever after the build moved on. A retried stage now reuses its row.
+- **Mac: every extracted game version is kept as the build resource it is.** The versions a profile's shader tables were made from are inputs to the shader split on every build, so deleting the packed version's siblings traded a full re-extraction of the base game for disk space — the wrong trade, and it is undone.
+- **Sync: the next upstream sync runs.** Upstream's latest commits stopped the sync and would have silently lost fork code; every patcher is now tested against real upstream in CI, a `--check-protection` run lists any hand-edited file no table covers, and files the fork owns outright are registered so a sync cannot revert them.
 
-When the build finishes, the window gains an **"安装到 iPhone"** group: the three steps (install the IPA with AltStore / Sideloadly → copy the whole `romfs` folder into the game app's Documents through the Files app → launch), the IPA and folder paths, and a Reveal-in-Finder button for each — no more digging through directories.
+## Known issues
 
-## New: the dependency list collapses
+- **Mods have not been played with a real mod yet**: the layouts and the environment string are verified; the actual overlay is not.
+- **Windows**: not provided on this page — the front end is verified on real hardware, the full build pipeline is not. The Actions artifact `NS-Port-Builder-qt-windows-x64` has the current front end.
 
-The eight dependency rows only matter while setting a machine up. The section is now a disclosure: collapsed automatically once everything is green, open while something is missing, and your manual choice is remembered.
+## Install
 
-## New: the README lists each game's required update version
+- **macOS**: download `NX2Apple-macOS-arm64.zip`, unzip, then right-click → Open on first launch. In-app updates work from 0.4.9 on under the NX2Apple name (older versions: download this one by hand).
+- **Windows**: not provided on this page; the Actions artifact has the Qt front end.
 
-The build checks the update NSP's display version against the profile's registered build, so the games table now has an **"Update required" column** — the exact version each game needs (e.g. Tears of the Kingdom `1.4.3`, Mario Kart 8 Deluxe `4.0.0`), with "无（v0）" for games that need no update.
+## Credits
 
-## The repository is now NX2Apple
-
-Renamed from `nxnative-romfs-archive` — old links redirect automatically. The README opening was rewritten around what the project has become, and the legal section was substantially expanded (what the project contains and what it cannot do, trademarks, user responsibility, takedowns, no warranty).
-
-## Also since v0.3.1
-
-- **48 games** (up from 46): Mario Kart 8 Deluxe and Balatro, plus the upstream host work behind them.
-- **One translation chain version** for every game (upstream's fix for issue #78): the stale-header failure that stopped the first Animal Crossing build can no longer happen.
-- **The automated upstream sync** (`.github/workflows/sync-upstream.yml`, daily): re-applies the fork's features onto upstream's tree, verifies (Python 3.9 parse, archive reader test, macOS host build), pushes — or opens an issue with the log. The replay tests caught and recovered two features the earlier wholesale sync had dropped: `romfs.idx` recognition and the Hades II update support.
-
-## What this build is
-
-[`NS-Port-Builder-macOS-arm64.zip`](https://github.com/LNPANDY/NX2Apple/releases/download/v0.4.0/NS-Port-Builder-macOS-arm64.zip) — the app itself, ad-hoc signed, Apple Silicon, macOS 13+. Unzip, then right-click → Open on first launch (or `xattr -dr com.apple.quarantine "NS Port Builder.app"`).
-
-**This is a front end only.** It drives the scripts of [NX2Apple](https://github.com/LNPANDY/NX2Apple), so clone that repository on the same Mac; the app finds it automatically and otherwise you pick it once with Choose repository….
-
-## Verified games
-
-| Game | Update required | Status |
-|---|---|---|
-| **Tears of the Kingdom** | 1.4.3 (v720896) | Verified — builds, installs and runs on an iPhone; 304,243 files into 127 archive shards, byte-verified |
-| **Hades II** | 1.0.137848 (v1) | Verified — builds, installs and runs on an iPhone; 33-file archive |
-
-**Every other game is unverified by this fork.** Twenty-odd are reported playable upstream; the full table with per-game versions is in the README. If you try another title, expect to bring it up yourself, and please report what you find.
-
-## Requirements
-
-- An Apple Silicon Mac, macOS 13+
-- **Python 3.9+** with `lz4`, `capstone`, `fontTools`, and zstd (`compression.zstd` on 3.14+, `backports.zstd` before) — the dependency panel manages a venv with all of this
-- .NET SDK 10 (Homebrew, .pkg and dotnet-install.sh all work)
-- ~6 GB free beyond the NSPs; the shader compile is the long step
-- Your own game files and `prod.keys` — nothing is bundled
-
-## Legal
-
-No Nintendo code, assets, firmware or keys are included anywhere. The pipeline requires your own dumps and your own keys and talks to no server. Not affiliated with or endorsed by Nintendo; trademarks belong to their owners. Personal-backup laws differ by country — you are responsible for your jurisdiction, and the outputs are for your own hardware only. See the README's Legal section for the full statement, including takedown handling.
+- **v0lumehi**: the saved-choices store, the Manage menu, the tools self-update, the Xcode team reader, the sync overhaul, the compile-gate catch, and the issue forms — eleven reviewed pull requests in two days.
+- **GabeThe21stGamer**: the report that exposed the stale-tools and no-certificate paths (#87), and the free-Apple-ID test of the certificate-less install.
 
 ---
 
-# 中文说明
+## 这一版做了什么
 
-三件事合成一个版本：把第一次构建的用户从 NSP 一路带到装好的图形界面、与上游的自动联动、以及找回两次同步中静默丢失的特性。
+**Mac 启动器来了，iPhone 的游戏数据终于稳了。** 启动器成了真正的游戏机风格界面：启动选项存进游戏自己的选择存储（与上游读的是同一处），游戏库的 Manage 菜单用手柄就能打开，只有普通 Apple ID、没有任何开发证书也能安装——Xcode 在第一次安装时自动把证书办齐。iPhone 这边，选择游戏数据在重启后依然有效，还没有数据的 App 会直接进启动器而不是死页面，选完按 Play 立即生效，安装器在通过 USB 拷贝几个 GB 之前会先来询问。构建工具会自己更新了，连旧版 ZIP 拷贝也能接上。
 
-## 新增：归档文件夹直接可拷贝，附安装引导
+## 新增
 
-分片现在落在 **`romfs/` 文件夹**——`romfs.idx` 加分片文件——就在 NSP 旁边。这正是游戏 App 的 `Documents/romfs` 要的布局，整个文件夹**不用改名**直接拷上手机。打包前会清掉上一轮的旧分片，新包变小也不会留残留文件。
+- **启动选项存进游戏自己的存储**：每个设置一条字符串（`launcher.<VAR>`），写在 App 的偏好域里——正是上游启动器读取的位置，Finder 和 Dock 启动同样生效。只保留非默认值，旧启动器的选择一次性迁移；schema 1 完整支持：父项有值才显示子项（`needs`）、启动器不认识的分组按列表顺序排在已知分组之后、范围上下限来自条目本身。更新版的 schema 能读多少读多少并写进日志，绝不拒绝。
+- **游戏库的 Manage 菜单换成启动器同款风格**——并且可以用手柄打开和操作。
+- **构建工具自己更新**：旧版 ZIP 拷贝在 App 打开时自动接上 git（你自己的修改保留在分支上）；工具比 App 旧时直接拒绝开始构建，而不是到最后一步才失败。
+- **只凭 Apple ID 就能安装**：签名团队从 Xcode 的开发者偏好里读取（个人团队会标注），与证书里的合并。一个证书都没有时，Xcode 在第一次安装时自动创建（`-allowProvisioningUpdates`）；提示语会说明这一点，既没有 Apple ID 也没有证书时，会告诉你确切该去哪里登录。
+- **安装器在拷贝游戏文件前先询问**：Mac 经 USB 向 iPhone 只有约 25–70 MB/s，弹窗提供"现在传输"或"暂不传输"——两种选择游戏都会装上；结果卡片新增"游戏数据（romfs.img）"一行，带"在访达中显示"，方便手动拷贝（把高速外接盘直接连 iPhone 更快，启动器的"选择游戏数据"可以从那里加载）。
+- **Issue 表单**：游戏/构建/启动器三类问题各自要求报告所需的信息（版本、设备、Copy 诊断、游戏日志），缺了就提交不了；PR 模板和 CONTRIBUTING.md 给工具立了同样的规矩。
 
-构建完成后，窗口出现**「安装到 iPhone」**分组：三步（AltStore / Sideloadly 装 IPA → 用文件 App 把 romfs 文件夹整个拷进游戏 App 的 Documents → 启动），附 IPA 和文件夹的路径，以及各自的「在访达中显示」按钮——不用再自己翻目录。
+## 修复
 
-## 新增：依赖列表可折叠
+- **iPhone：选择游戏数据终于能记住。** 书签在 Files App 的安全作用域被持有期间写入（不持作用域写出的书签从下次启动起就解析不了——于是每次选择都报"签名不同"），保存前先验证能读回，能解析但过期的书签自动重写而不必重选。解析出的作用域在整个会话期间持有，因为游戏全程都在读镜像。
+- **iPhone：没有游戏数据不再是死路。** 全新安装、Documents 里没有数据、也从没选过路径时，App 会正常进启动器（旧版停在一句静态的"Game files not found"上，绝口不提选择器）；按 Play 时先重新定位数据——本次会话的选择立即生效，存档/临时目录跟着最终位置走。没有启动器的极简包才回退到静态提示。
+- **iPhone：签名重试复用同一行。** 团队变体重试会追加一行同 ID 的"为 … 签名"，而所有更新都只打到第一行——构建都走完了它还在转圈。重试的步骤现在复用自己的行。
+- **Mac：每个解包版本都作为构建资源保留。** 游戏 shader 表登记的来源版本是每次构建 shader split 的输入，删掉打包版本之外的版本，等于拿整份基础版重解去换磁盘空间——这笔账不划算，已撤销。
+- **同步：下一次上游同步能跑通了。** 上游最新提交会让同步中断并悄悄丢掉 fork 代码；现在每个补丁器都在 CI 里对着真实上游测试，`--check-protection` 会列出任何没被登记的手改文件，fork 完全 own 的文件也已登记、同步不会回退它们。
 
-八行依赖只在装机时需要看。现在是一个可折叠分组：全绿后自动收起，缺东西时自动展开，手动选择会被记住。
+## 已知问题
 
-## 新增：README 列出每个游戏的所需版本
+- **Mods 还没有用真正的 mod 实测过**：布局和环境变量已验证，实际的叠加加载没有。
+- **Windows**：本页不提供——前端在真机上验证过，完整构建流水线没有。Actions 产物 `NS-Port-Builder-qt-windows-x64` 是当前的前端。
 
-构建会用 profile 注册的 build 严格校验更新包的显示版本，所以游戏表加了**「需要的更新包」列**——每个游戏的精确版本（如王国之泪 `1.4.3`、马里奥赛车 8 `4.0.0`），无需更新的标「无（v0）」。
+## 安装
 
-## 仓库更名为 NX2Apple
+- **macOS**：下载 `NX2Apple-macOS-arm64.zip`，解压后右键 → 打开（首次）。0.4.9 起 App 内更新在 NX2Apple 名下正常工作（更早的版本请这次手动下载）。
+- **Windows**：本页不提供；Actions 产物里有 Qt 前端。
 
-从 `nxnative-romfs-archive` 改名——旧链接自动跳转。README 开头围绕项目现在的形态重写，法律声明大幅扩充（项目包含什么、做不到什么、商标、用户责任、下架处理、无担保）。
+## 致谢
 
-## v0.3.1 之后还包含
-
-- **48 个游戏**（原 46）：新增马里奥赛车 8 豪华版和 Balatro，以及它们需要的宿主工作。
-- **所有游戏共用一个翻译链版本**（上游对 issue #78 的修复）：第一次动物森友会构建碰到的过期 header 失败不会再发生。
-- **自动上游同步**（`.github/workflows/sync-upstream.yml`，每天）：把 fork 特性重新应用到上游新树，验证后推送；补丁对不上就开 issue 附日志。回放测试抓到并恢复了更早的整树替换丢掉的两个特性：`romfs.idx` 识别和 Hades II 更新支持。
-
-## 这个包是什么
-
-[`NS-Port-Builder-macOS-arm64.zip`](https://github.com/LNPANDY/NX2Apple/releases/download/v0.4.0/NS-Port-Builder-macOS-arm64.zip) 就是 App 本身，ad-hoc 签名，Apple Silicon，macOS 13+。解压后首次启动右键 → 打开（或执行 `xattr -dr com.apple.quarantine "NS Port Builder.app"`）。
-
-**这只是前端。** 它调用 [NX2Apple](https://github.com/LNPANDY/NX2Apple) 的脚本，所以同一台 Mac 上需要 clone 那个仓库；App 会自动发现，找不到就点 Choose repository… 选一次。
-
-## 已验证的游戏
-
-| 游戏 | 需要的更新包 | 状态 |
-|---|---|---|
-| **塞尔达传说：王国之泪** | 1.4.3 (v720896) | 已验证 —— 构建、安装、在 iPhone 上运行；304,243 个文件归档成 127 片，逐字节校验通过 |
-| **Hades II** | 1.0.137848 (v1) | 已验证 —— 构建、安装、在 iPhone 上运行；33 个文件的归档 |
-
-**其他游戏本 fork 均未验证。** 二十余个上游报告 iPhone 可玩；完整表格（含每个游戏的版本）在 README。试别的游戏请做好自行 bring-up 的准备，欢迎反馈。
-
-## 环境要求
-
-- Apple Silicon Mac，macOS 13+
-- **Python 3.9+**，装有 `lz4`、`capstone`、`fontTools`，以及 zstd（3.14+ 用内置 `compression.zstd`，更早用 `backports.zstd`）——依赖面板通过 venv 全部管理
-- .NET SDK 10（Homebrew / .pkg / dotnet-install.sh 三种都支持）
-- 除 NSP 外约 6 GB 空间；shader 编译是最慢的一步
-- 你自己的游戏文件和 `prod.keys`——不含任何数据
-
-## 法律
-
-任何地方都不包含任天堂的代码、资源、固件或密钥。流水线需要你自己的导出文件和自己的密钥，不连接任何服务器。与任天堂无关联、未获认可；商标归权利人所有。个人备份的法律各地不同——请自行确认所在地法律，产物仅用于自己的硬件。完整声明（含下架处理）见 README 的法律一节。
+- **v0lumehi**：选择存储、Manage 菜单、工具自更新、Xcode 团队读取、同步大修、编译门禁拦截、issue 表单——两天里十一连审通过的 PR。
+- **GabeThe21stGamer**：暴露了旧工具与无证书两条路径的报告（#87），以及免证书安装的免费 Apple ID 实测。
