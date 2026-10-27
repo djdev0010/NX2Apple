@@ -30,6 +30,7 @@ uint64_t dm_guest_frame(void);        // Incremented each time the host presents
 void guest_clock_freeze(int on);
 void guest_clock_freeze_for(int reason, int on);   // Freeze by reason (1 background, 2 system keyboard); see hle_os.c
 void guest_clock_read_wait(void);     // A guest read of the system counter: waits while the app is in the background (hle_os.c)
+size_t dm_alias_region_room(void);    // The largest address region the alias region still holds (hle_svc.c); a game's virtual address memory is cut to it (hle_os.c)
 
 // Forced takeover: even if the SDK module has a definition, all references to that symbol at load time (JUMP_SLOT/GLOB_DAT/ABS64) are resolved to the host implementation.
 // Used only for the service-layer nn:: (service clients of fs/oe/aoc/pctl...); the SDK's libc++ and nn::os internals do not go into this table.

@@ -40,6 +40,12 @@ static int h_time_timespec(int64_t *ts) {
 }
 HLE_FORCE("_ZN2nn4time41GetStandardUserSystemClockCurrentTimespecEP8timespec", "C library real-time clock from the user clock → host real time", int, h_time_StdTimespec, int64_t *ts) { return h_time_timespec(ts); }
 HLE_FORCE("_ZN2nn4time43GetAdjustableUserSystemClockCurrentTimespecEP8timespec", "C library real-time clock from the adjustable user clock → host real time", int, h_time_AdjTimespec, int64_t *ts) { return h_time_timespec(ts); }
+// The C library's monotonic clock: nntimeStartup also points clock_gettime(CLOCK_MONOTONIC) at the standard steady clock (source 3, sdk+0x9e464 in Avatar Legends' SDK 17 build) once
+// time::Initialize succeeds, and std::chrono::steady_clock::now() throws std::system_error when it fails: the SDK's getter asks the time service, and Avatar Legends: The Fighting Game
+// called std::terminate at its first steady_clock read (main+0x9b970). The guest clock, as the system tick that the source before nntimeStartup reads
+HLE_FORCE("_ZN2nn4time37GetStandardSteadyClockCurrentTimespecEP8timespec", "C library monotonic clock from the steady clock → the guest clock (as the system tick)", int, h_time_SteadyTimespec, int64_t *ts) {
+    uint64_t ns = guest_ns(); ts[0] = (int64_t)(ns / 1000000000u); ts[1] = (int64_t)(ns % 1000000000u); return 0;
+}
 // User clock context (0x20 bytes: s64 offset + the steady time point it was made at; user time = offset + a steady time point of the same source ID, the snapshot below fills its +0x00 the same way).
 // The SDK reads it from the time service's shared memory, which the host never opens: it returns 0x74 and writes nothing. Unity's DateTime.UtcNow (Engage main+0x4ad40c; Ace Attorney Investigations
 // 1&2 per PR #14) then never starts its clock and reads 0001-01-01. Unity takes its time from GetCurrentTime plus system ticks and only compares the context to notice the clock being set, so like a

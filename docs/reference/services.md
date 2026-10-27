@@ -17,6 +17,13 @@ SDK calls and system services the host answers (`dm/host/hle_*.c`). Each entry: 
 - SDK 3.6.0 booted to its frame loop with the provisional profile as generated and no host change: the services, the NVN API version (53, as for every SDK up to 10), the audio output and the heap all answered as for SDK 4.
 - **Found on:** [Bayonetta 2](../../dm/games/01007960049A0000/README.md) (PlatinumGames' engine in its Wii U form): what it needed was graphics ([Clears of attachments larger than the render pass](rendering.md#clears-of-attachments-larger-than-the-render-pass), [`Downsample` of a single-sample texture](rendering.md#downsample-of-a-single-sample-texture)) and a reader for its CRI CPK archives ([BNSH files in PlatinumGames DAT archives inside CRI CPK archives](shaders.md#bnsh-files-in-platinumgames-dat-archives-inside-cri-cpk-archives)); [Bayonetta](../../dm/games/010076F0049A2000/README.md), on the same `sdk` and `subsdk0` builds, then needed no change at all (its profile is Bayonetta 2's with its own build row and tables, and the route from the boot to the first fight logged no red line). [OCTOPATH TRAVELER](../../dm/games/010057D006492000/README.md)'s SDK 3.5.1 answered as SDK 4 as well (NVN 53.313); its audio renderer needed the update lock found without `SdkMutexType` ([No `SdkMutexType` in SDK 3](audio.md#no-sdkmutextype-in-sdk-3)).
 
+### Graphics memory figures with no nvdrv
+
+- **Symptom:** a null read in `sdk` (`CRASH sig=11 addr=0 pc=sdk+0x24a51c`, an unnamed nvdrv helper that `sdis.py` shows as `NvOsDrvMapSharedMem+0xd0`) within a second of boot, the backtrace through `nv::GetGraphicsMemoryInfo` (`sdk+0x246304`) from `nnMain`; in the NSP script, `the game stopped after 1 s in the Mac host (exit 139)` during the GLSLC capture and `captured only 0 run-time shaders`.
+- **Cause:** `nv::GetGraphicsMemoryInfo` and `nv::DumpGraphicsMemoryInfo` ask nvdrv (its `GetStatus` and `DumpGraphicsMemoryInfo` commands, vtable slots 0x50 and 0x68) through the service object `nv::InitializeGraphics` connects. The host has no nvdrv, so that object stays null. Hyrule Warriors: Definitive Edition (SDK 3.5.1, `main+0x2abf3c`) calls both right after `SetGraphicsAllocator` and before `InitializeGraphics`, for a debug print whose figures it never reads.
+- **Fix:** both are hooked (`hle_nvdrv.c`): `GetGraphicsMemoryInfo` fills its four 64-bit sizes with zeros (the host's GPU memory is Metal's), `DumpGraphicsMemoryInfo` does nothing.
+- **Found on:** Hyrule Warriors: Definitive Edition (`0100AE00096EA000`, 1.0.1, SDK 3.5.1; provisional profile, no note yet).
+
 ### Listing a game's unhooked imports before they are met
 
 Most service calls can be found before they crash, before the first boot or the next one: the calls that would abort in `sm::Initialize` (or read a null service object) are in the import list.
@@ -235,6 +242,13 @@ Most service calls can be found before they crash, before the first boot or the 
 - **Symptom:** SDK 20 calls that reach a service; `nfp`'s `AttachActivateEvent` / `AttachDeactivateEvent` crashed in the SDK at `sdk+0x3f2a78`.
 - **Fix:** the console six-axis sensor (`hid::*SevenSixAxisSensor*`) reports zero states; more `nfp` calls are hooked: `AttachActivateEvent` / `AttachDeactivateEvent`, the two-argument `Mount`, `Unmount`, `GetCommonInfo`, `GetRegisterInfo`, `GetState`, `Finalize`. The host answers as a console with no amiibo.
 - **Found on:** [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md) (1.9.0, SDK 20.5.22). [Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md) 1.2.1 already initialized `nn::nfp` at boot ([A game update imports SDK calls the base game did not](#a-game-update-imports-sdk-calls-the-base-game-did-not)).
+
+### The NFC library (`nfc`) beside amiibo
+
+- **Symptom:** an abort in `nn::nfc::Initialize` or `nn::nfc::IsNfcEnabled` (found before it was met, in `main`'s imports no host hook names).
+- **Cause:** `nfc::Initialize` creates the nfc user interface and `IsNfcEnabled` gets it (or the system one), both through sm:, which the host lacks. `GetState` answers 0 by itself while no interface exists.
+- **Fix:** `Initialize`, `Finalize`, `GetState` and `IsNfcEnabled` are hooked (`hle_sdk16.c`), as the same NFC device as `nfp`'s: initialized (1), enabled, never a tag.
+- **Found on:** Hyrule Warriors: Definitive Edition (`0100AE00096EA000`, SDK 3.5.1; provisional profile, no note yet), from its imports ([Listing a game's unhooked imports before they are met](#listing-a-games-unhooked-imports-before-they-are-met)).
 
 ### Vibration values flushed by the SDK's vibration graph
 

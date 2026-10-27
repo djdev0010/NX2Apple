@@ -112,7 +112,9 @@ enum L10n {
         "data.change": ("更换…", "Change…"),
         "data.noBase": ("这个文件夹里没有本体 NSP（[xxxx…000]）",
                         "No base game NSP in this folder ([xxxx…000])"),
-        "data.noNsp": ("这个文件夹里没有 NSP/XCI", "No NSP/XCI in this folder"),
+        "data.noNsp": ("这个文件夹里没有 NSP/XCI/NSZ/XCZ 或 zip", "No NSP/XCI/NSZ/XCZ or zip in this folder"),
+        "data.unzipping": ("正在解压 zip…", "Opening the zip…"),
+        "data.unzipFailed": ("zip 解压失败——文件不完整或已损坏？", "Could not open the zip: is it incomplete or damaged?"),
 
         // ---- dependencies ----
         // ---- Qt front end (frontend-qt): keys the SwiftUI app does not use yet ----

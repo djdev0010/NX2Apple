@@ -60,6 +60,15 @@ static void mem_init(void) {
     static pthread_once_t once = PTHREAD_ONCE_INIT;
     pthread_once(&once, mem_init_once);
 }
+// The largest region AllocateAddressRegion can still hand out in the alias region: the SDK's AddressRegionManager keeps its node area at the start (ARM_NODE_AREA unless
+// sdk_patches.py cuts it, so this errs small) and puts a large region on a 1 GB boundary after it. Rounded down to whole 256 MB, which leaves the manager slack
+#define ARM_NODE_AREA 0x3fe00000ull   // the AddressRegionManager node area (sdk+0x134728 in newer SDKs, see mem_init_once)
+#define ARM_ALIGN (1ull << 30)
+size_t dm_alias_region_room(void) {
+    mem_init();
+    uint64_t start = ((uintptr_t)g_alias + ARM_NODE_AREA + ARM_ALIGN - 1) & ~(ARM_ALIGN - 1), end = (uintptr_t)g_alias + g_alias_cap;
+    return end > start ? (size_t)((end - start) & ~((256ull << 20) - 1)) : 0;
+}
 
 // Application memory pool = the 3285 MB the Switch (4 GB model) gives applications. At startup (main+0x1b66160) the game sets the whole total reported by QueryMemoryInfo as the heap, retrying with 2 MB less on failure,
 // and hands the whole block to its own StandardAllocator (main+0x32137a0) -- so heap size = pool − image footprint, it has only as much as the host reports.

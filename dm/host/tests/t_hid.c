@@ -1,4 +1,4 @@
-// Players and controllers (GitHub issue #74): the Mac front end's slot assignment (pad_slots.h) and the npads hle_hid.c reports for each player, docked and handheld, with the
+// Players and controllers (GitHub issue #74): the Mac front end's slot assignment (pad_slots.h), its button maps (pad_map.h) and the npads hle_hid.c reports for each player, docked and handheld, with the
 // game's supported npad ids; no controller, window or guest exists in this test (the hid take-overs are called directly, events are recorded by the stubs)
 #include <time.h>
 static int hid_clock_gettime(clockid_t clock, struct timespec *ts);
@@ -6,6 +6,7 @@ static int hid_clock_gettime(clockid_t clock, struct timespec *ts);
 #include "../hle_hid.c"
 #undef clock_gettime
 #include "../pad_slots.h"
+#include "../pad_map.h"
 
 static int checks, fails, g_mode = 1, g_signals;
 static void *g_signalled;
@@ -206,9 +207,53 @@ static void t_rumble_log(void) {
     unsetenv("DM_RUMBLE_LOG");
 }
 
+static void t_maps(void) {
+    // Every element presses a different button in both presets, so no two controller buttons do one job
+    for (int e = 0; e < PE_N; e++) for (int x = e + 1; x < PE_N; x++) {
+        CHECK(PAD_MAP_POSITION.to[e] != PAD_MAP_POSITION.to[x], "the position preset gives each element its own button");
+        CHECK(PAD_MAP_LETTERS.to[e] != PAD_MAP_LETTERS.to[x], "the letters preset gives each element its own button");
+    }
+    CHECK(pad_map_press(&PAD_MAP_POSITION, 1u << PE_B) == DM_BTN_A, "by position the right face button is A");
+    CHECK(pad_map_press(&PAD_MAP_LETTERS, 1u << PE_A) == DM_BTN_A, "by letters the button marked A is A");
+    CHECK(pad_map_press(&PAD_MAP_POSITION, 1u << PE_A | 1u << PE_LT) == (DM_BTN_B | DM_BTN_ZL), "held elements press their buttons together");
+    CHECK(pad_map_press(&PAD_MAP_POSITION, 0) == 0, "nothing held presses nothing");
+
+    // Mapping by pressing swaps: the element that pressed the button before takes the pressed element's old one
+    pad_map m = PAD_MAP_POSITION;
+    pad_map_assign(&m, PE_A, DM_BTN_A);   // bottom (was B) now A; right (was A) takes B
+    CHECK(m.to[PE_A] == DM_BTN_A && m.to[PE_B] == DM_BTN_B, "assigning A to the bottom button swaps it with the right one");
+    pad_map_assign(&m, PE_LT, 0);
+    CHECK(m.to[PE_LT] == 0 && pad_map_press(&m, 1u << PE_LT) == 0, "an element can press nothing");
+    pad_map_assign(&m, PE_RT, 0);
+    CHECK(m.to[PE_RT] == 0 && m.to[PE_LT] == 0, "unmapping a second element leaves the first unmapped too");
+    pad_map_assign(&m, PE_N, DM_BTN_A);
+    CHECK(m.to[PE_A] == DM_BTN_A, "an out-of-range element changes nothing");
+
+    // Saved keys round-trip, and an unknown key is reported, not guessed
+    for (int i = 0; i < PAD_BUTTONS; i++) {
+        uint64_t bit = 0;
+        CHECK(pad_button_parse(pad_buttons[i].key, &bit) && bit == pad_buttons[i].bit && pad_button_of(bit) == &pad_buttons[i], "a button key round-trips");
+    }
+    uint64_t bit = 7;
+    CHECK(pad_button_parse("None", &bit) && bit == 0, "None is no button");
+    CHECK(!pad_button_parse("Turbo", &bit) && bit == 0, "an unknown button key leaves the value alone");
+    CHECK(pad_elem_parse("buttonMenu") == PE_MENU && pad_elem_parse("paddle1") == -1, "element keys parse, unknown ones fail");
+
+    // Deadzone: inside it centered, at full deflection still full, between stretched
+    float x = 0.1f, y = 0.1f; pad_deadzone(&x, &y, 0.2f);
+    CHECK(x == 0 && y == 0, "a deflection inside the deadzone is centered");
+    x = 1, y = 0; pad_deadzone(&x, &y, 0.2f);
+    CHECK(fabsf(x - 1) < 1e-6f && y == 0, "full deflection stays full");
+    x = 0.6f, y = 0; pad_deadzone(&x, &y, 0.2f);
+    CHECK(fabsf(x - 0.5f) < 1e-6f, "halfway between the deadzone and the edge reads as half");
+    x = 0.3f, y = -0.4f; pad_deadzone(&x, &y, 0);
+    CHECK(x == 0.3f && y == -0.4f, "no deadzone leaves the stick alone");
+}
+
 int main(void) {
     CHECK(setenv("DM_RUMBLE_LOG", "1", 1) == 0, "enable rumble diagnostics");
     t_slots();
+    t_maps();
     t_npads();
     t_vibration();
     t_rumble_log();

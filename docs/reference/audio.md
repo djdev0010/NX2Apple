@@ -58,6 +58,13 @@ For a replaced DSP renderer the size query keeps the service's work-buffer contr
 - **Fix:** `render_once` looks up the `SdkMutexType` functions only when `update_lock` does not find `LockMutex` (`hle_audren.c`).
 - **Found on:** [OCTOPATH TRAVELER](../../dm/games/010057D006492000/README.md) (SDK 3.5.1), the first SDK 3 game through the audio renderer (Bayonetta 2's 3.6.0 plays through `AudioOut`).
 
+### `AudioRenderSystem` at +0x50 in SDK 3's `AudioRendererImpl`
+
+- **Symptom:** no sound at all: the log has `render thread started` but never `first-frame commands` or `DeviceSink inputs`; with `DM_AUDREN_TRACE=1` only `audren update #1`; `DM_AUDIO_DUMP` is all zeros; the game's sound thread waits in `os::WaitSystemEvent` on the renderer event for good.
+- **Cause:** the host's `AudioRendererImpl::ExecuteAudioRendererRendering` took the `AudioRenderSystem` at +0x60 inside `AudioRendererImpl`; this SDK 3.5.1 build has it at +0x50 (`add x19, x0, #0x50`, `sdk+0x188a10`). `render_once` read the mode and device of another object, returned 0x40299 every frame and rendered nothing, and the public `ExecuteAudioRendererRendering` signals the game's event only when that call succeeds, so the sound thread never ran a second update.
+- **Fix:** the offset is read from the SDK's own function (the `add xN, x0, #imm` before its first `bl`; `impl_sys_off` in `hle_audren.c`), +0x60 otherwise. The log says `audren: AudioRenderSystem at +0x50 in AudioRendererImpl`. The command list then has SDK 6's headers and SDK 4's 0x130-byte DeviceSink, ID 0xf ([SDK 4: DeviceSink is command 0xf of 0x130 bytes](#sdk-4-devicesink-is-command-0xf-of-0x130-bytes)).
+- **Found on:** Hyrule Warriors: Definitive Edition (`0100AE00096EA000`, SDK 3.5.1; provisional profile, no note yet).
+
 ### The render thread's route through the public `ExecuteAudioRendererRendering` (SDK 20)
 
 - **Symptom:** `CommandListProcessor::Process` crashes now and then (SIGSEGV under `render_main`, once at 60 s and once at 134 s in the shrine); every `RequestUpdate` renders a catch-up frame.

@@ -5,6 +5,7 @@
 // Controllers: buttons by position as on the iPhone (right A, bottom B, top X, left Y), shoulders L R, triggers ZL ZR, Menu + Options −, both sticks and their presses.
 // Each controller is a player of its own (local co-op): the first one connected is player 1, together with the keyboard, the next player 2, and so on up to 8 (pad_slots.h);
 // DM_PAD_MERGE=1 merges every controller into player 1 instead, DM_KBD_PLAYER=own makes the keyboard player 1 on its own, with the controllers from player 2 on.
+// Settings → Controllers… (⌘,, controls_mac.m) remaps the buttons per controller type, moves controllers between players, swaps the sticks and sets a deadzone.
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <Metal/Metal.h>
@@ -15,6 +16,7 @@
 #include "touchpad_geometry.h"   // the virtual pad iOS draws, so the preview matches it
 #include "hle.h"
 #include "pad_slots.h"
+#include "controls_mac.h"
 #include "haptics_apple.h"
 #include <signal.h>
 #include <math.h>
@@ -115,21 +117,15 @@ static void on_key(NSEvent *e, int down) {
 static pad_slots g_slots;
 static GCController *g_held[DM_PLAYERS];   // the controller of each slot, kept alive while it holds it (the slot table keys on its pointer)
 static int g_merge, g_kbd_own;
-static int32_t pad_axis(float v) { return (int32_t)(fmaxf(-1.f, fminf(1.f, v)) * DM_STICK_MAX); }
 static void pad_read(GCExtendedGamepad *g) {
+    controls_seen(g);
     if (!g_input_on) return;
     int p = g_merge ? 0 : pad_slot_of(&g_slots, (__bridge const void *)g.controller); if (p < 0) return;
     dm_haptics_apple_controller(p, g.controller);
-    uint64_t m = 0;
-    #define K(btn, bit) if (btn.isPressed) m |= bit
-    K(g.buttonB, DM_BTN_A); K(g.buttonA, DM_BTN_B); K(g.buttonY, DM_BTN_X); K(g.buttonX, DM_BTN_Y);   // by position: right A, bottom B, top X, left Y
-    K(g.leftShoulder, DM_BTN_L); K(g.rightShoulder, DM_BTN_R); K(g.leftTrigger, DM_BTN_ZL); K(g.rightTrigger, DM_BTN_ZR);
-    K(g.buttonMenu, DM_BTN_PLUS); K(g.buttonOptions, DM_BTN_MINUS); K(g.leftThumbstickButton, DM_BTN_LS); K(g.rightThumbstickButton, DM_BTN_RS);   // nil on pads without them: not pressed
-    K(g.dpad.left, DM_BTN_LEFT); K(g.dpad.up, DM_BTN_UP); K(g.dpad.right, DM_BTN_RIGHT); K(g.dpad.down, DM_BTN_DOWN);
-    #undef K
-    dm_pad_set_player(p, m, pad_axis(g.leftThumbstick.xAxis.value), pad_axis(g.leftThumbstick.yAxis.value), pad_axis(g.rightThumbstick.xAxis.value), pad_axis(g.rightThumbstick.yAxis.value));
+    int32_t st[4]; controls_sticks(g, st);
+    dm_pad_set_player(p, controls_buttons(g), st[0], st[1], st[2], st[3]);
 }
-static const char *pad_name(GCController *c) { return c.vendorName.UTF8String ?: "?"; }
+const char *pad_name(GCController *c) { return c.vendorName.UTF8String ?: "?"; }
 static void npad_name(int p, char *out, size_t cap) { uint32_t id = dm_player_npad(p); if (id == 0x20) snprintf(out, cap, "handheld"); else snprintf(out, cap, "%u", id); }
 // Called at start and on every connect / disconnect (gone: the controller that was just removed, nil on a connect)
 static void pads_changed(GCController *gone) {
@@ -181,6 +177,9 @@ static void pads_start(void) {
     e = getenv("DM_KBD_PLAYER"); g_kbd_own = !g_merge && e && !strcmp(e, "own");
     static const char kbd = 0;
     if (g_kbd_own) pad_slot_take(&g_slots, &kbd, "keyboard");   // holds player 1 for good
+    // The players saved in the settings: a controller of a saved name takes its player back, as one that reconnects does
+    char saved[DM_PLAYERS][64]; controls_load(saved);
+    for (int p = 0; p < DM_PLAYERS; p++) if (!g_slots.owner[p] && saved[p][0]) memcpy(g_slots.last[p], saved[p], sizeof g_slots.last[p]);
     LOG("front end: %s", g_merge ? "every controller is player 1 (DM_PAD_MERGE)" : g_kbd_own ? "the keyboard is player 1, each controller a player of its own from player 2 on (DM_KBD_PLAYER=own)"
                                                                            : "each controller is a player of its own, the keyboard plays with player 1");
     pads_changed(nil);
@@ -295,6 +294,36 @@ static void pads_start(void) {
 - (void)viewDidChangeBackingProperties { [super viewDidChangeBackingProperties]; [self fitDrawable]; }
 @end
 
+// ---------- Players for the controller settings window (controls_mac.h) ----------
+GCController *pads_player(int p) { return p >= 0 && p < DM_PLAYERS ? g_held[p] : nil; }
+int pads_player_is_keyboard(int p) { return p >= 0 && p < DM_PLAYERS && g_slots.owner[p] && !g_held[p]; }
+const char *pads_player_name(int p) { return p >= 0 && p < DM_PLAYERS ? g_slots.last[p] : ""; }
+int pads_merged(void) { return g_merge; }
+void pads_reread(void) { for (int p = 0; p < DM_PLAYERS; p++) if (g_held[p].extendedGamepad) pad_read(g_held[p].extendedGamepad); }
+static void pad_hold(int p, GCController *c) {   // slot p's holder becomes c (nil: free), with nothing left pressed for p
+    dm_haptics_apple_controller(p, nil); dm_pad_set_player(p, 0, 0, 0, 0, 0);
+    g_slots.owner[p] = (__bridge const void *)c; g_held[p] = c;
+    if (c) snprintf(g_slots.last[p], sizeof g_slots.last[p], "%s", pad_name(c));
+}
+void pads_assign(GCController *c, int p) {
+    if (!c.extendedGamepad || g_merge || p < 0 || p >= DM_PLAYERS || pads_player_is_keyboard(p)) return;
+    int from = pad_slot_of(&g_slots, (__bridge const void *)c);
+    if (from == p) return;
+    GCController *other = g_held[p];
+    if (from >= 0) pad_hold(from, other);   // swap places; with no player of its own, c pushes the one there out
+    pad_hold(p, c);
+    dm_pad_players(pad_slot_mask(&g_slots));
+    if (other && from >= 0) pad_read(other.extendedGamepad);
+    pad_read(c.extendedGamepad);
+    LOG("controller '%s': player %d (settings)%s", pad_name(c), p + 1, !other ? "" : from >= 0 ? ", the one there swapped places" : ", the one there has no player now");
+}
+void pads_unassign(int p) {
+    if (!pads_player(p)) return;
+    LOG("controller '%s': no player (settings)", pad_name(g_held[p]));
+    pad_hold(p, nil); g_slots.last[p][0] = 0;
+    dm_pad_players(pad_slot_mask(&g_slots));
+}
+
 typedef struct { void (*fn)(void); } guest_arg;
 static void *guest_tramp(void *p) {
     static char alt[65536];                       // The signal alternate stack is per thread; crash printing must also work on the guest thread
@@ -346,6 +375,7 @@ void front_run(void (*guest)(void)) {
         NSMenu *bar = [NSMenu new], *app = [NSMenu new], *wm = [[NSMenu alloc] initWithTitle:@"Window"];
         [[bar addItemWithTitle:@"" action:nil keyEquivalent:@""] setSubmenu:app];
         [app addItemWithTitle:[NSString stringWithFormat:@"Quit %s", dm_profile()->name] action:@selector(terminate:) keyEquivalent:@"q"];
+        controls_install_menu(bar);
         [[bar addItemWithTitle:@"Window" action:nil keyEquivalent:@""] setSubmenu:wm];
         [wm addItemWithTitle:@"Enter Full Screen" action:@selector(toggleFullScreen:) keyEquivalent:@"f"].keyEquivalentModifierMask = NSEventModifierFlagControl | NSEventModifierFlagCommand;
         NSApp.mainMenu = bar;
@@ -354,7 +384,7 @@ void front_run(void (*guest)(void)) {
             [NSNotificationCenter.defaultCenter addObserverForName:nm object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
                 GCController *c = n.object; int conn = n.name == GCControllerDidConnectNotification;
                 if (!c.extendedGamepad || g_merge) LOG("controller %s: %s%s", conn ? "connected" : "disconnected", pad_name(c), c.extendedGamepad ? "" : " (no extended gamepad profile: not used)");
-                pads_changed(conn ? nil : c); }];
+                pads_changed(conn ? nil : c); controls_pads_changed(); }];
         dm_haptics_apple_init();
         pads_start();
         [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown | NSEventMaskKeyUp handler:^NSEvent *(NSEvent *e) {

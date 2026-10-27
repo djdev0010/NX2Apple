@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 // NS Port Builder: a macOS front end that walks a user through building a playable
 // IPA from their own Switch game files. Not part of the host runtime; drives the
@@ -41,7 +42,20 @@ enum StepState: Equatable {
 }
 
 /// One of the four things the user points at.
-enum InputKind { case base, update, dlc, keys }
+enum InputKind {
+    case base, update, dlc, keys
+
+    /// The file extensions the picker offers for this input; a folder scan takes the same ones.
+    /// NSZ / XCZ are compressed dumps the build decompresses; a zip is opened and its folder scanned.
+    var extensions: [String] {
+        switch self {
+        case .base, .update: return ["nsp", "xci", "nsz", "xcz", "zip"]
+        case .dlc: return ["nsp", "nsz"]
+        case .keys: return ["keys"]
+        }
+    }
+    static let dumpExtensions: Set<String> = ["nsp", "xci", "nsz", "xcz"]
+}
 
 struct Slot: Identifiable {
     let id: String
@@ -70,7 +84,7 @@ final class BuildModel: ObservableObject {
         Slot(id: "base", kind: .base, title: "data.base", optional: false),
         Slot(id: "update", kind: .update, title: "data.update", optional: true),
         Slot(id: "dlc", kind: .dlc, title: "data.dlc", optional: true),
-        Slot(id: "keys", kind: .keys, title: "data.keys", optional: false),
+        Slot(id: "keys", kind: .keys, title: "data.keys", optional: false, paths: BuildModel.savedKeys().map { [$0] } ?? []),
     ]
     @Published var outDir = ""
     @Published var stages: [Stage] = []
@@ -428,6 +442,18 @@ final class BuildModel: ObservableObject {
     var updatePath: String { slot("update").paths.first ?? "" }
     var dlcPaths: [String] { slot("dlc").paths }
 
+    /// The keys file of the last game, offered for the next one when its folder has none.
+    /// Only the path is remembered; the keys stay where the player keeps them.
+    private static let keysPathDefault = "keysPath"
+    static func savedKeys() -> String? {
+        guard let p = UserDefaults.standard.string(forKey: keysPathDefault), FileManager.default.fileExists(atPath: p) else { return nil }
+        return p
+    }
+    private func rememberKeys() { if !keysPath.isEmpty { UserDefaults.standard.set(keysPath, forKey: Self.keysPathDefault) } }
+
+    /// Zips whose extraction failed in this session: not tried again on every rescan.
+    private var failedZips: Set<String> = []
+
     func slot(_ id: String) -> Slot { slots.first { $0.id == id } ?? slots[0] }
     private func updateSlot(_ id: String, _ body: (inout Slot) -> Void) {
         if let i = slots.firstIndex(where: { $0.id == id }) { body(&slots[i]) }
@@ -444,6 +470,7 @@ final class BuildModel: ObservableObject {
         let fm = FileManager.default
         var base: [(String, Int)] = [], update: [(String, Int, Int)] = [], dlc: [String] = []
         var keys: String?
+        var zips: [String] = []
         var seen = 0
         let enumerator = fm.enumerator(atPath: folder)
         while let rel = enumerator?.nextObject() as? String {
@@ -457,11 +484,13 @@ final class BuildModel: ObservableObject {
             let low = name.lowercased()
             if isDir.boolValue {
                 // the pipeline's own output, and anything hidden: never walk back into those
-                if low == "archive" || low == "xcode" || low.hasSuffix("_build") || low.hasSuffix("_survey") { enumerator?.skipDescendants() }
+                if low == "archive" || low == "xcode" || low.hasSuffix("_build") || low.hasSuffix("_survey") || low.hasSuffix(Self.unzipSuffix) { enumerator?.skipDescendants() }
                 continue
             }
             if keys == nil && (low == "prod.keys" || low.hasSuffix(".keys")) { keys = path; continue }
-            guard low.hasSuffix(".nsp") || low.hasSuffix(".xci") else { continue }
+            let ext = (low as NSString).pathExtension
+            if ext == "zip" { zips.append(path); continue }
+            guard InputKind.dumpExtensions.contains(ext) else { continue }
             let size = (try? fm.attributesOfItem(atPath: path))?[.size] as? Int ?? 0
             guard size > 0 else { continue }   // an incomplete download leaves 0-byte files behind
             guard let tid = Self.titleID(name) else { continue }   // a name without [title ID] cannot be classified
@@ -482,9 +511,46 @@ final class BuildModel: ObservableObject {
             $0.problem = ""
         }
         updateSlot("dlc") { $0.paths = dlc.sorted(); $0.problem = "" }
-        updateSlot("keys") { $0.paths = keys.map { [$0] } ?? []; $0.problem = "" }
+        // No keys beside this game: offer the ones the last game used.
+        updateSlot("keys") { $0.paths = (keys ?? Self.savedKeys()).map { [$0] } ?? []; $0.problem = "" }
+        rememberKeys()
+        // A zip not opened yet is extracted beside itself, then the folder is scanned again.
+        let unopened = zips.filter { !fm.fileExists(atPath: Self.unzipDestination($0)) && !failedZips.contains($0) }
+        if !unopened.isEmpty {
+            unzip(unopened) { [weak self] in
+                guard let self, self.gameDir == folder else { return }   // another folder was picked meanwhile
+                self.scan(folder: folder)
+            }
+            return
+        }
         if base.isEmpty && update.isEmpty && dlc.isEmpty {
-            updateSlot("base") { $0.problem = "data.noNsp" }
+            updateSlot("base") { $0.problem = failedZips.isDisjoint(with: zips) ? "data.noNsp" : "data.unzipFailed" }
+        }
+    }
+
+    private static let unzipSuffix = ".unzipping"
+    private static func unzipDestination(_ zip: String) -> String { (zip as NSString).deletingPathExtension }
+
+    /// Extracts each zip beside itself (Foo.zip → Foo/) off the main thread, then calls `done` on it.
+    /// ditto writes into Foo.unzipping first and the folder is renamed only when complete, so an
+    /// interrupted extraction never looks finished; a failed one is remembered and not retried.
+    private func unzip(_ zips: [String], done: @escaping () -> Void) {
+        updateSlot("base") { $0.problem = "data.unzipping" }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let fm = FileManager.default
+            let failed = zips.filter { zip in
+                let dest = Self.unzipDestination(zip), partial = dest + Self.unzipSuffix
+                try? fm.removeItem(atPath: partial)
+                guard Self.runOK("/usr/bin/ditto", ["-x", "-k", zip, partial]), (try? fm.moveItem(atPath: partial, toPath: dest)) != nil else {
+                    try? fm.removeItem(atPath: partial)
+                    return true
+                }
+                return false
+            }
+            DispatchQueue.main.async {
+                self?.failedZips.formUnion(failed)
+                done()
+            }
         }
     }
 
@@ -502,19 +568,24 @@ final class BuildModel: ObservableObject {
         p.canChooseDirectories = false
         p.canChooseFiles = true
         p.allowsMultipleSelection = (kind == .dlc)
-        switch kind {
-        case .base, .update: p.allowedFileTypes = ["nsp", "xci"]
-        case .dlc: p.allowedFileTypes = ["nsp"]
-        case .keys: p.allowedFileTypes = ["keys"]
-        }
+        p.allowedContentTypes = kind.extensions.compactMap { UTType(filenameExtension: $0) }
         guard p.runModal() == .OK, !p.urls.isEmpty else { return }
         let id = kind == .base ? "base" : kind == .update ? "update" : kind == .dlc ? "dlc" : "keys"
         let picked = p.urls.map(\.path)
+        // A zip holds the whole dump: open it and fill every slot from its folder.
+        if let zip = picked.first(where: { ($0 as NSString).pathExtension.lowercased() == "zip" }) {
+            let dest = Self.unzipDestination(zip)
+            gameDir = dest
+            if FileManager.default.fileExists(atPath: dest) { scan(folder: dest); return }
+            unzip([zip]) { [weak self] in self?.scan(folder: dest) }
+            return
+        }
         updateSlot(id) { s in
             s.paths = kind == .dlc ? Array(Set(s.paths + picked)).sorted() : Array(picked.prefix(1))
             s.problem = ""
         }
         if kind == .base, !picked.isEmpty { gameDir = (picked[0] as NSString).deletingLastPathComponent }
+        if kind == .keys { rememberKeys() }
     }
 
     func clear(_ id: String) { updateSlot(id) { $0.paths = []; $0.problem = "" } }

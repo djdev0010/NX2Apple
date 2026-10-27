@@ -25,6 +25,32 @@ HLE_FORCE("_ZN2nn2ro12LookupSymbolEPmPKc", "look up a definition by name in the 
 
 // nn::ro::Module as the SDK fills it (LoadModuleInternal): +0 the module object (RoModule, inside the NRO on Horizon; the host's module_t here), +8 state (1 = loaded), +0x10 image, +0x18 buffer
 typedef struct { void *module; uint32_t state, pad; const void *image; void *buffer; } ro_module;
+// ---------- Online SDKs: an offline stand-in ----------
+// The host never loads an online SDK (LoadModule below). A game's LoadModule of one succeeds with this stand-in: no code is mapped, and LookupModuleSymbol answers the SDK's
+// EOS_* names with host functions that make it look offline, the path every EOS game has for a console without network (EOS_Initialize fails with EOS_NoConnection,
+// EOS_Platform_Create returns null). Failing the load instead suits Hades, which then never asks for the module, but Avatar Legends: The Fighting Game aborts when
+// RegisterModuleInfo or LoadModule fails (main+0x1654dc, main+0x165628); with the stand-in it logs "EOS_Platform_Create returned null" and plays offline.
+// Every EOS function returns an integer, a pointer or nothing in x0, so a handful of stubs called through the game's own prototypes covers all of them
+#define EOS_NO_CONNECTION 1   // EOS_EResult
+static char g_eos_standin;    // the stand-in's identity in ro_module.module
+static int eos_no_connection(void) { return EOS_NO_CONNECTION; }
+static int eos_true(void) { return 1; }
+static const char *eos_offline_string(void) { return "offline (the host does not load Epic Online Services)"; }
+static uint64_t eos_nothing(void) { return 0; }   // null handles, invalid notification IDs, EOS_Success from setters, nothing from void calls
+static void *eos_stub(const char *name) {
+    size_t n = strlen(name);
+    if (n > 9 && !strcmp(name + n - 9, "_ToString")) return (void *)eos_offline_string;
+    if (!strcmp(name, "EOS_Initialize")) return (void *)eos_no_connection;
+    if (!strcmp(name, "EOS_EResult_IsOperationComplete")) return (void *)eos_true;
+    return (void *)eos_nothing;
+}
+static int is_standin(const ro_module *rm) { return rm && rm->state == 1 && rm->module == &g_eos_standin; }
+static Result standin_load(ro_module *rm, const void *image, void *buf, const char *what) {
+    LOG("ro::LoadModule: %s is an online SDK (Epic Online Services): not loaded, an offline stand-in answers its EOS_* lookups; the game plays offline", what);
+    if (rm) *rm = (ro_module){ .module = &g_eos_standin, .state = 1, .image = image, .buffer = buf };
+    return 0;
+}
+
 static module_t *module_from(const ro_module *rm) {
     if (!rm || rm->state != 1) return NULL;
     for (int i = 0; i < g_nmod; i++) if (rm->module == (void *)&g_mod[i] && g_mod[i].nro && g_mod[i].loaded) return &g_mod[i];
@@ -32,6 +58,11 @@ static module_t *module_from(const ro_module *rm) {
 }
 
 HLE_FORCE("_ZN2nn2ro18LookupModuleSymbolEPmPKNS0_6ModuleEPKc", "look up a definition by name in one loaded NRO", Result, h_ro_LookupModuleSymbol, uintptr_t *out, const void *mod, const char *name) {
+    if (is_standin(mod)) {
+        if (!name || strncmp(name, "EOS_", 4)) return RO_FAIL;
+        if (out) *out = (uintptr_t)eos_stub(name);
+        return 0;
+    }
     module_t *m = module_from(mod); void *p = m && name ? module_sym(m, name) : NULL;
     // A name the loaded module does not define fails on Horizon too (ldr:ro's not-found result), and games probe for one: Portal's Source engine asks each module for BuiltDebug, which
     // only its debug builds define. Only a module the host does not know is wrong
@@ -58,13 +89,14 @@ HLE_FORCE("_ZN2nn2ro10LoadModuleEPNS0_6ModuleEPKvPvmi", "load an NRO rewritten o
     char hx[17]; for (int k = 0; k < 8; k++) snprintf(hx + 2 * k, 3, "%02x", sha[k]);
     // Online SDKs are never loaded, whatever the game (dm/tools/nro_collect.py ONLINE_SDKS: Epic Online Services, known by its export EOS_Platform_Create). Hades and Hades II load
     // rom:/nro/EOSSDK-Switch-Shipping.nro for Epic-account cross-save (Auth, Connect, PlayerDataStorage), which the host cannot serve; the real SDK would at best fail its login and at
-    // worst wait on time-outs or contact Epic's servers. Refused, the game's EOS_Platform_Create stays a stub, it logs "[EOS] Failed to create platform" and plays offline with local
-    // saves, as before the host loaded NROs. The pack leaves such an NRO out (a "refused" row in nro.tsv); an older nro.tsv that has it is caught by the export below
-    if (nro_refused(sha)) { LOG("ro::LoadModule: refused %s… (%u bytes): an online SDK (Epic Online Services), not loaded; the game plays offline", hx, n); return RO_FAIL; }
+    // worst wait on time-outs or contact Epic's servers. Such a module gets the offline stand-in above. The pack leaves it out (a "refused" row in nro.tsv); an older nro.tsv that
+    // has it is caught by the export below
+    char what[64]; snprintf(what, sizeof what, "%s… (%u bytes)", hx, n);
+    if (nro_refused(sha)) return standin_load(mod, image, buf, what);
     pthread_mutex_lock(&g_ro_mu);
     module_t *m = nro_find(sha);
     if (!m) { pthread_mutex_unlock(&g_ro_mu); LOG("[RED] ro::LoadModule: no rewritten NRO with SHA-256 %s… (%u bytes): it is not in the patched modules' nro.tsv", hx, n); return RO_FAIL; }
-    if (module_sym(m, "EOS_Platform_Create")) { pthread_mutex_unlock(&g_ro_mu); LOG("ro::LoadModule: refused %s (%s…): an online SDK (Epic Online Services), not loaded; the game plays offline", m->name, hx); return RO_FAIL; }
+    if (module_sym(m, "EOS_Platform_Create")) { pthread_mutex_unlock(&g_ro_mu); return standin_load(mod, image, buf, m->name); }
     if (m->loaded) { pthread_mutex_unlock(&g_ro_mu); LOG("[RED] ro::LoadModule: %s (%s…) is loaded already", m->name, hx); return RO_FAIL; }
     if (m->nro_size != n) LOG("[RED] ro::LoadModule: %s is %u bytes, nro.tsv says %u", m->name, n, m->nro_size);
     nro_load(m);
@@ -84,6 +116,7 @@ HLE_FORCE("_ZN2nn2ro10LoadModuleEPNS0_6ModuleEPKvPvmib", "load an NRO rewritten 
 HLE_FORCE("_ZN2nn2ro8FinalizeEv", "Initialize opened no ldr:ro session", void, h_ro_Finalize, void) { }
 
 HLE_FORCE("_ZN2nn2ro12UnloadModuleEPNS0_6ModuleE", "unload an NRO: its fini, then out of the symbol lookups", void, h_ro_UnloadModule, void *mod) {
+    if (is_standin(mod)) { *(ro_module *)mod = (ro_module){0}; return; }
     module_t *m = module_from(mod);
     if (!m || !m->loaded) { LOG("[RED] ro::UnloadModule: not a loaded module (%p)", mod); return; }
     if (m->fini) ((void (*)(void))(m->base + m->fini))();   // as RoModule::CallFini
@@ -100,9 +133,8 @@ HLE_FORCE("_ZN2nn2ro18RegisterModuleInfoEPNS0_16RegistrationInfoEPKv", "register
     if (!r || memcmp(r, "NRR0", 4)) return RO_FAIL;
     uint32_t off = *(const uint32_t *)(r + 0x340), cnt = *(const uint32_t *)(r + 0x344), refused = 0;
     for (uint32_t i = 0; i < cnt; i++) refused += nro_refused(r + off + 32 * i);
-    // An NRR that registers only online SDKs the host refuses (Hades and Hades II: game.nrr with the one EOS SDK hash) fails as every registration did before the host loaded NROs,
-    // so such a game takes the path it took then (it never asked for the module)
-    if (cnt && refused == cnt) { LOG("ro::RegisterModuleInfo: refused an NRR that registers only online SDKs (%u hashes), as before NROs were loaded; the game plays offline", cnt); return RO_FAIL; }
+    // An NRR that registers only online SDKs (Hades and Hades II: game.nrr with the one EOS SDK hash) is accepted like any other: their LoadModule gets the offline stand-in
+    if (cnt && refused == cnt) LOG("ro::RegisterModuleInfo: an NRR of online SDKs only (%u hashes): their modules load as the offline stand-in", cnt);
     static int n; if (n++ < 20) LOG("ro::RegisterModuleInfo: NRR with %u hashes", cnt);
     (void)info;
     return 0;

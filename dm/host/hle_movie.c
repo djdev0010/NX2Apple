@@ -52,6 +52,7 @@ HLE_FORCE("_ZN5movie9Extractor13SetDataSourceEPKc", "movie demuxer: the host doe
 #define MD_STALE_NS 250000000ull // how long an input the client held across a flush stays withheld (h_movie_AcqIn)
 #define MD_FMT_NV12 4
 #define MD_FMT_ABGR 3            // 4-byte RGBA (memory order R G B A), only with the native texture mode
+#define MD_MODE_CPU 1            // CPU mode: the decoder writes frames into the client's buffer
 #define MD_MODE_TEX 2            // native texture mode: the decoder writes frames into the client's NVN texture
 #define MD_TYPE_AVC 1
 #define MD_TYPE_VP8 2
@@ -497,6 +498,11 @@ HLE_FORCE("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11De
 // SDK 4's constructor has no priority argument (Dark Souls Remastered, NintendoSDK_movie 4.5.0). Without this take-over the SDK built its own decoder and the host's Configure read it as a host one (a call through a null pointer)
 HLE_FORCE("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11DecoderModeE", "movie decoder (SDK 4, no priority): host implementation", void, h_movie_Decoder4,
           void **self, int type, int fmt, int mode) { h_movie_Decoder(self, type, fmt, mode, 0); }
+// SDK 3's constructor has neither a mode nor a priority: its DecoderImpl always writes into the client's buffer, and it numbers the video output formats one lower: 3 is NV12.
+// Hyrule Warriors: Definitive Edition (subsdk1+0x2de630) asks for H.264 in format 3 and draws the result from a w×h R8 texture and a w/2×h/2 RG8 one filled from a w×h and a w×h/2
+// byte buffer (main+0x5cd5a8); written as RGBA, the logo was a fine pink and yellow grid. Without the take-over the host's Configure ran on the SDK's object (a call through a null pointer)
+HLE_FORCE("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatE", "movie decoder (SDK 3, no mode or priority): host implementation in CPU mode", void, h_movie_Decoder3,
+          void **self, int type, int fmt) { h_movie_Decoder(self, type, type >= 1 && type <= 3 && fmt == 3 ? MD_FMT_NV12 : fmt, MD_MODE_CPU, 0); }
 static void md_free(void **self) {
     mdec_t *d = md_of(self); if (!d) return;
     md_defer_drop(d);

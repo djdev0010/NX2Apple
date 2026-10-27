@@ -212,6 +212,14 @@ HLE_FORCE("_ZN2nn3nfp19StartGameDataEraserEPNS0_12DeviceHandleERKNS0_24AmiiboSet
 HLE_FORCE("_ZN2nn3nfp29StartNicknameAndOwnerSettingsEPNS0_12DeviceHandleEPbPNS0_12RegisterInfoERKNS0_24AmiiboSettingsStartParamERKNS0_7TagInfoE", "amiibo nickname and owner settings applet: no tag", Result, h_nfp_Nick, NfpDeviceHandle *h, uint8_t *changed, void *reg, const void *p, const void *tag) { (void)h; (void)reg; (void)p; (void)tag; if (changed) *changed = 0; return nfp_no_tag("StartNicknameAndOwnerSettings"); }
 HLE_FORCE("_ZN2nn3nfp29StartNicknameAndOwnerSettingsEPNS0_12DeviceHandleEPbPNS0_12RegisterInfoERKNS0_24AmiiboSettingsStartParamERKNS0_7TagInfoERKS4_", "amiibo nickname and owner settings applet (with the old register info): no tag", Result, h_nfp_Nick2, NfpDeviceHandle *h, uint8_t *changed, void *reg, const void *p, const void *tag, const void *old) { (void)h; (void)reg; (void)p; (void)tag; (void)old; if (changed) *changed = 0; return nfp_no_tag("StartNicknameAndOwnerSettings"); }
 
+// ---------- nfc: the NFC library beside nfp ----------
+// nfc::Initialize creates the nfc user interface and IsNfcEnabled gets it (or the system one): both connect through sm:, which the host lacks → abort. GetState answers 0 by itself while no
+// interface exists, but after the host's Initialize it must agree with it. The same NFC device as nfp's: initialized and enabled, never a tag (Hyrule Warriors: Definitive Edition, SDK 3.5.1)
+HLE_FORCE("_ZN2nn3nfc10InitializeEv", "NFC library init; the host's NFC device is nfp's, which never finds a tag", void, h_nfc_Init, void) { }
+HLE_FORCE("_ZN2nn3nfc8FinalizeEv", "NFC library finalize; the host has no session", void, h_nfc_Fini, void) { }
+HLE_FORCE("_ZN2nn3nfc8GetStateEv", "NFC library state: initialized (1)", int, h_nfc_State, void) { return 1; }
+HLE_FORCE("_ZN2nn3nfc12IsNfcEnabledEv", "NFC enabled in the system settings: yes (amiibo screens then search and find no tag)", int, h_nfc_Enabled, void) { return 1; }
+
 // ---------- vi: vsync event ----------
 // The game passes a SystemEventType; after binding, a host thread fires it at 60 Hz (DM_VSYNC_HZ can change it). While the display link presents, the event follows its ticks, as a
 // Switch's follows its display: Super Mario Galaxy 2 runs the Wii's VI retrace (and with it each emulated frame) on this event, and on a clock of the host's own the frames drifted

@@ -147,13 +147,38 @@ HLE_FORCE("getenv", "the game profile's game_env answers its names; the SDK's ow
 static void *(*g_sa_alloc)(void *, size_t), *(*g_sa_alloc_al)(void *, size_t, size_t);
 static int g_sa_big_align;
 static pthread_once_t g_sa_once = PTHREAD_ONCE_INIT;
+static void *sdk_sym(const char *name) {   // the SDK module's own definition, which the take-overs below pass on to
+    for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "sdk")) return module_sym(&g_mod[i], name);
+    return NULL;
+}
 static void sa_init(void) {
-    module_t *ms = NULL; for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "sdk")) ms = &g_mod[i];
-    g_sa_alloc = ms ? module_sym(ms, "_ZN2nn3mem17StandardAllocator8AllocateEm") : NULL;
-    g_sa_alloc_al = ms ? module_sym(ms, "_ZN2nn3mem17StandardAllocator8AllocateEmm") : NULL;
+    g_sa_alloc = sdk_sym("_ZN2nn3mem17StandardAllocator8AllocateEm");
+    g_sa_alloc_al = sdk_sym("_ZN2nn3mem17StandardAllocator8AllocateEmm");
     if (!g_sa_alloc || !g_sa_alloc_al) die("StandardAllocator::Allocate not found in the SDK");
     g_sa_big_align = dm_profile()->alloc_big_align;
     if (g_sa_big_align) LOG("StandardAllocator::Allocate: allocations ≥ 64 KB are 64 KB aligned (game profile alloc_big_align: memory pool storage, see hle_os.c)");
+}
+// ---------- nn::mem::StandardAllocator::Initialize(nullptr, size): virtual address memory clamped to the alias region ----------
+// With virtual address memory a game hands StandardAllocator no storage, only an address space size, and the SDK reserves it with AllocateAddressRegion in the alias region,
+// mapping pages as they are used. Games size it for the Switch's 64 GB alias region: Absolum 40 GB, Pokémon Legends: Z-A 12 GB, Paper Mario: The Thousand-Year Door 62 GB,
+// Avatar Legends: The Fighting Game 60 GB (main+0x1bb790). The host's alias region is a few GB, the reservation fails and the SDK aborts (CentralHeap::Init, sdk+0x141b98 in Avatar's sdk).
+// A request larger than the region can hold is cut to what it holds; the pool (app_pool) bounds what is mapped anyway. A game whose patches.py already cuts the size passes unchanged
+static size_t sa_va_size(void *addr, size_t size) {   // the size passed on: with storage (addr) or a size that fits, unchanged
+    size_t room = dm_alias_region_room();
+    if (addr || size <= room || !room) return size;
+    LOG("StandardAllocator::Initialize: virtual address memory %.2f GB → %.2f GB (what the alias region holds)", size / 1073741824.0, room / 1073741824.0);
+    return room;
+}
+#define SA_INIT "_ZN2nn3mem17StandardAllocator10InitializeEPvm"   // Initialize(void *, size_t); with "b" appended, Initialize(void *, size_t, bool)
+HLE_FORCE(SA_INIT "b", "passed to the SDK; a virtual address memory size (nullptr storage) larger than the alias region holds is cut to fit", void, h_mem_SAInit3, void *self, void *addr, size_t size, int cache) {
+    static void (*sdk)(void *, void *, size_t, int);
+    if (!sdk && !(sdk = sdk_sym(SA_INIT "b"))) die("StandardAllocator::Initialize(void *, size_t, bool) not found in the SDK");
+    sdk(self, addr, sa_va_size(addr, size), cache);
+}
+HLE_FORCE(SA_INIT, "passed to the SDK; a virtual address memory size (nullptr storage) larger than the alias region holds is cut to fit", void, h_mem_SAInit2, void *self, void *addr, size_t size) {
+    static void (*sdk)(void *, void *, size_t);
+    if (!sdk && !(sdk = sdk_sym(SA_INIT))) die("StandardAllocator::Initialize(void *, size_t) not found in the SDK");
+    sdk(self, addr, sa_va_size(addr, size));
 }
 HLE_FORCE("_ZN2nn3mem17StandardAllocator8AllocateEm", "passed straight to the SDK; with the profile's alloc_big_align (13 Sentinels, Unicorn Overlord) allocations ≥ 64 KB are 64 KB aligned (memory pool start)", void *, h_mem_SAAllocate, void *self, size_t size) {
     pthread_once(&g_sa_once, sa_init);

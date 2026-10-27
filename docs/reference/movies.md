@@ -32,6 +32,13 @@ The SDK's movie library (`movie::Decoder`, `movie::Extractor`), which the host t
 - **Fix:** both forms are taken over now (`hle_movie.c`).
 - **Found on:** [DARK SOULS: REMASTERED](../../dm/games/01004AB00A260000/README.md) (SDK 4.5.0; one boot).
 
+### SDK 3's `movie::Decoder` constructor without a mode, and its output format 3 (NV12)
+
+- **Symptom:** `CRASH sig=11 addr=0 pc=0 lr=h_movie_Configure+0x324` right after `[movie] RegisterClientEvents`, with no `[movie] decoder … type …` line before it, as the first logo movie starts. Taken over with format 3 read as RGBA: the logo is a fine pink and yellow grid filling the screen.
+- **Cause:** SDK 3's constructor takes only the type and the output format (`_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatE`); its `DecoderImpl` has no mode and always writes into the client's buffer. The host took over neither, so the SDK built its own decoder, and the host's `Configure` read it as a host one and called its `MediaData` accessors, which only the host's constructor looks up. SDK 3 numbers the video output formats one lower: its 3 is NV12 (4 from SDK 4). The game draws the picture from a w×h R8 texture and a w/2×h/2 RG8 one, filled from a w×h and a w×h/2 byte buffer (`main+0x5cd5a8`), and sizes it from `crop` (it reads `stride` but does not use it).
+- **Fix:** the SDK 3 constructor is taken over as CPU mode (1), with video format 3 as NV12 (`hle_movie.c`).
+- **Found on:** Hyrule Warriors: Definitive Edition (`0100AE00096EA000`, SDK 3.5.1, H.264 and AAC in MP4, `subsdk1+0x2de630`; provisional profile, no note yet).
+
 ### The complete-object destructor
 
 - **Cause:** the game calls the complete-object destructor `movie::Decoder::~Decoder` (`D1`); the SDK's own one destroyed the host object as a `DecoderImpl`.
