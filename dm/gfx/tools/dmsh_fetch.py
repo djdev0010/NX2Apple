@@ -61,3 +61,50 @@ def variant(msl, bindings, om_only_ok=False):
     if body.count('    return out;\n') < 1: return None, 'return out not found'
     body = body.replace('    return out;\n', put + '    return out;\n')
     return body, {'calls': calls, 'mixed_regs': mixed, 'outputs': [{'color': c, 'type': t} for t, n, c in outs]}
+
+# Folding (dmsh_build.py DMSH_FOLD): the shader's own library is built from its readable-tile version, so one compile makes both. Each function constant gets a default for when it is
+# not set, the shader as it was: FX_i = -1 (every sample as usual), FB_k = false (no colour inputs), OM_j_k = true only for output j's own attachment. The host specializes a library's
+# functions with an empty set of values when they declare constants (nvn_mtl.m shader_load), which gives main0 as before; bf_fn sets every constant, which gives the readable-tile version.
+# The integer-output entry points after main0 (main0_u, main0_m: dmsh_build.py fs_uint) come along unchanged; they read main0's output struct, whose members the variant renames,
+# so they get a plain copy of it (main0_out_v). Checked on Hyrule Warriors: Age of Calamity's 5,342 pixel shaders with a variant: the defaults compiled as constexpr (identity) give the
+# same optimized LLVM IR as the shader's own source, metadata numbering and phi order aside
+def fold(msl, bindings, om_only_ok=False):
+    v, meta = variant(msl, bindings, om_only_ok)
+    if v is None or not isinstance(meta, dict): return None, meta
+    own = {(j, o['color']) for j, o in enumerate(meta['outputs'])}
+    def default(m):
+        ty, name, idx = m.groups()
+        if name.startswith('FX_'): d = '-1'
+        elif name.startswith('FB_'): d = 'false'
+        else: j, k = map(int, name[3:].split('_')); d = 'true' if (j, k) in own else 'false'
+        return f'constant {ty} {name}_fc [[function_constant({idx})]];\nconstant {ty} {name} = is_function_constant_defined({name}_fc) ? {name}_fc : {d};'
+    v = re.sub(r'^constant (int|bool) ((?:FX|FB|OM)_[\d_]+) \[\[function_constant\((\d+)\)\]\];$', default, v, flags=re.M)
+    cut = msl.find('\nstruct main0_out_u\n')
+    om = re.search(r'struct main0_out\s*\{(.*?)\};', msl, re.S)
+    if cut >= 0 and om:   # om: variant found the same struct
+        plain = 'struct main0_out_v\n{\n' + ''.join(f'    {t} {n};\n' for t, n in re.findall(r'(\w+) (m_\d+) \[\[color\(\d+\)\]\];', om.group(1))) + '};\n\n'
+        v = v.rstrip('\n') + '\n\n' + plain + msl[cut + 1:].replace('    main0_out out = {};\n', '    main0_out_v out = {};\n')
+    return v, meta
+
+def identity(folded, meta):
+    """A folded source with every constant at its default, written as constexpr with the members, arguments and stores they switch off removed: what the host's empty set of values
+    makes of it, as source the compiler can check against the shader's own (dmsh_build.py DMSH_FOLD_CHECK)"""
+    own = {(j, o['color']) for j, o in enumerate(meta['outputs'])}
+    out = []
+    for l in folded.splitlines():
+        if re.match(r'constant (int|bool) \w+_fc \[\[function_constant\(\d+\)\]\];$', l): continue
+        m = re.match(r'constant int (FX_\d+) = is_function_constant_defined\(\w+\) \? \w+ : (-?\d+);$', l)
+        if m: out.append(f'constant constexpr int {m.group(1)} = {m.group(2)};'); continue
+        if re.match(r'constant bool (FB|OM)_[\d_]+ = is_function_constant_defined', l): continue
+        m = re.match(r'(\s*)(\w+) (\w+) \[\[color\((\d+)\), function_constant\(OM_(\d+)_(\d+)\)\]\];$', l)
+        if m:
+            if (int(m.group(5)), int(m.group(6))) in own: out.append(f'{m.group(1)}{m.group(2)} {m.group(3)} [[color({m.group(4)})]];')
+            continue
+        m = re.match(r'(\s*)if \(OM_(\d+)_(\d+)\) (.*)$', l)
+        if m:
+            if (int(m.group(2)), int(m.group(3))) in own: out.append(m.group(1) + m.group(4))
+            continue
+        l = re.sub(r', float4 fb\d \[\[color\(\d\), function_constant\(FB_\d\)\]\]', '', l)
+        l = re.sub(r'float4 fb\d \[\[color\(\d\), function_constant\(FB_\d\)\]\](, )?', '', l)
+        out.append(re.sub(r'\bfb\d\b', 'float4(0.0)', l))
+    return '\n'.join(out) + '\n'

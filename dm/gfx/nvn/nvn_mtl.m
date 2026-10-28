@@ -3751,7 +3751,9 @@ static NvShader *shader_load(NSString *pc, int stage, int layer) {
     if (stage == 0 && !layer) o->has_pull = [j[@"pull"] isKindOfClass:[NSDictionary class]];
     // A function that declares function constants cannot go into a pipeline until it is specialized, even when every constant is optional. SPIRV-Cross declares one for shaders that read a
     // texel buffer (spvLinearTextureAlignmentOverride, used only through is_function_constant_defined; one of Pokémon Legends: Z-A's imgui pixel shaders, 2bd5037003980716): an empty set of
-    // values keeps its default. Without it the first pipeline with that shader failed Metal's validation (`fragmentFunction main0 cannot be used to build a pipeline state`)
+    // values keeps its default. Without it the first pipeline with that shader failed Metal's validation (`fragmentFunction main0 cannot be used to build a pipeline state`).
+    // A folded pixel shader (reflection "fold", dmsh_build.py fold_try) is built from its readable-tile version, whose constants default to the shader as it was: the empty set gives
+    // its main0, bf_fn's values the readable-tile version, from the same library (<key>_bf.metallib is a copy of it)
     if (j[@"entry_discard"]) {
         o->discard_fn = fn4_note([lib newFunctionWithName:j[@"entry_discard"]], lib, j[@"entry_discard"], nil);
         if (o->discard_fn.functionConstantsDictionary.count) {
@@ -3770,6 +3772,14 @@ static NvShader *shader_load(NSString *pc, int stage, int layer) {
         if (!o->fn_m) MLOG("[RED] shader %s: no mixed integer-output entry point %s in its library", pc.UTF8String, [j[@"entry_m"] UTF8String]); }
     if (o->fn.functionConstantsDictionary.count) {
         NSError *fe = nil; MTLFunctionConstantValues *cv = [MTLFunctionConstantValues new]; id<MTLFunction> f = fn4_note([lib newFunctionWithName:entry constantValues:cv error:&fe], lib, entry, cv);
+        if (!f && j[@"fold"]) {   // a folded shader has no library of its own to fall back on: its constants set to their defaults one by one (bf_fn's numbering) are the same shader
+            MLOG("[RED] shader %s: folded, its defaults failed (%s): every constant set to the shader as it was", pc.UTF8String, fe.localizedDescription.UTF8String);
+            cv = [MTLFunctionConstantValues new];
+            for (int i = 0; i < o->rf.nfc; i++) { int v = -1; [cv setConstantValue:&v type:MTLDataTypeInt atIndex:(NSUInteger)i]; }
+            for (int q = 0; q < 8; q++) { bool b = false; [cv setConstantValue:&b type:MTLDataTypeBool atIndex:(NSUInteger)(32 + q)]; }
+            for (int jo = 0; jo < o->rf.nfo; jo++) for (int q = 0; q < 8; q++) { bool b = q == o->rf.fo_color[jo]; [cv setConstantValue:&b type:MTLDataTypeBool atIndex:(NSUInteger)(64 + 8 * jo + q)]; }
+            f = fn4_note([lib newFunctionWithName:entry constantValues:cv error:&fe], lib, entry, cv);
+        }
         if (f) o->fn = f; else MLOG("[RED] shader %s: specializing its function constants failed: %s", pc.UTF8String, fe.localizedDescription.UTF8String);
         if (o->fn_u) { f = fn4_note([lib newFunctionWithName:j[@"entry_u"] constantValues:cv error:&fe], lib, j[@"entry_u"], cv); o->fn_u = f; }
         if (o->fn_m) { f = fn4_note([lib newFunctionWithName:j[@"entry_m"] constantValues:cv error:&fe], lib, j[@"entry_m"], cv); o->fn_m = f; }

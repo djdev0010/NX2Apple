@@ -205,8 +205,70 @@ def write_refl(key, refl):
     for target, d in (('mac', out),) + ((('ios', IOSOUT),) if IOSOUT else ()):
         atomic_json(os.path.join(d, key + '_b.json'), MTL.with_compiler(target, refl))
 
+# Folding (dmsh_fetch.fold): a pixel shader with a readable-tile version is built once, from that version with every function constant defaulting to the shader as it was; the
+# library is then both <key>_b.metallib and <key>_bf.metallib, and one compile of two is saved (Hyrule Warriors: Age of Calamity: 5,342 of its pixel shaders, 48% of their compile time).
+# <key>_b.metal is the source compiled (dmsh_mtlcache.py fills its cache from these; c1_guard.py reads the same accesses in it). The app has no second library to fall back on, so a
+# folded source is checked before it replaces two: it must compile, and with DMSH_FOLD_CHECK=1 match the shader at its defaults.
+# Not for the pixel shaders of the pair tables (load_pairs): pso_offline.py leaves a pair whose functions declare constants to the device (metal-tt cannot specialize), so folding them
+# would move their pipelines out of the app's prebuilt archive. A folded source that does not compile is built as before (two libraries).
+# The host's first specialization of a folded shader with its defaults takes tens of milliseconds, which Metal then keeps in the user's cache by the library's contents: warm_folded does
+# it once at the end of the build, on this Mac, so the game does not wait for it at a first draw.
+# DMSH_FOLD=0: no folding (both libraries as before; the default in an iOS build, DMSH_FOLD=1 folds there too). DMSH_FOLD_CHECK=1: also compile each folded source's defaults as constexpr (dmsh_fetch.identity) and fold only when its optimized
+# LLVM IR is the shader's own (twice the compiles: for checking dmsh_fetch.py changes, not for everyday builds)
+FOLD = os.environ.get('DMSH_FOLD', '0' if IOSOUT else '1') != '0'   # off by default in an iOS build: a phone's Metal cache cannot be warmed from here (warm_folded)
+FOLD_CHECK = os.environ.get('DMSH_FOLD_CHECK') == '1'
+FETCH_SRC = open(dmsh_fetch.__file__, 'rb').read()
+FOLD_STATS = collections.Counter()
+def fold_on(key): return FOLD and key not in PAIRED_PS   # PAIRED_PS: below load_pairs
+
+def llvm_ir(path):   # optimized LLVM IR of a source, without value names, metadata references, attribute groups and the order of phi incomings
+    ll = path + '.ll'
+    if subprocess.run(['xcrun', '-sdk', 'macosx', 'metal', '-S', '-emit-llvm', '-O2', '-fpreserve-invariance', path, '-o', ll], capture_output=True).returncode: return None
+    body, keep = [], False
+    for l in open(ll):
+        if l.startswith('define '): keep = True
+        if keep:
+            l = re.sub(r'%[\w.]+', '%v', re.sub(r' #\d+\b', '', re.sub(r', ![\w.]+ !\d+', '', l.rstrip())))
+            m = re.match(r'^(.*= phi \S+ )(\[.*\])$', l)
+            if m: l = m.group(1) + ', '.join(sorted(re.findall(r'\[[^\]]*\]', m.group(2))))
+            body.append(l)
+        if l.startswith('}'): keep = False
+    os.unlink(ll)
+    return '\n'.join(body)
+
+def fold_try(key, msl, bindings):   # → the variant's metadata when <key>_b.metallib was built folded, else None (built as before)
+    fsrc, fmeta = dmsh_fetch.fold(open(msl).read(), bindings, om_only_ok=key in BF_WANT)
+    if not fsrc: return None
+    fpath = msl[:-6] + '.fold.metal'; open(fpath, 'w').write(fsrc)
+    if FOLD_CHECK:
+        ipath = msl[:-6] + '.identity.metal'; open(ipath, 'w').write(dmsh_fetch.identity(fsrc, fmeta))
+        a, b = llvm_ir(ipath), llvm_ir(msl)
+        if a is None or a != b: FOLD_STATS['check failed'] += 1; print(f'[RED] {key}: folded source not the shader at its defaults (optimized IR differs), built as before', flush=True); return None
+        FOLD_STATS['checked'] += 1
+    try:
+        if 'mac' in TARGETS: MTL.compile('mac', fpath, os.path.join(out, key + '_b.metallib'))
+        if IOSOUT: MTL.compile('ios', fpath, os.path.join(IOSOUT, key + '_b.metallib'))
+    except subprocess.CalledProcessError:
+        FOLD_STATS['did not compile'] += 1; return None
+    clone(fpath, os.path.join(out, key + '_b.metal'))
+    FOLD_STATS['folded'] += 1
+    return fmeta
+
+def warm_folded(libs):   # dmsh_warm.m on the folded libraries: the host's empty-set specializations done once here, into this Mac's Metal cache. Never stops the build
+    if not libs: return 'none'
+    tool = os.path.join(w, 'dmsh_warm')
+    r = subprocess.run(['xcrun', 'clang', '-fobjc-arc', '-O2', '-framework', 'Metal', '-framework', 'Foundation', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dmsh_warm.m'), '-o', tool], capture_output=True, text=True)
+    if r.returncode: return '[RED] dmsh_warm.m did not build: ' + r.stderr.strip()[:160]
+    r = subprocess.run([tool], input='\n'.join(libs) + '\n', capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else f'[RED] dmsh_warm failed: {r.stderr.strip()[:160]}'
+
 def fetch_finish(key, src, refl):
     if refl['stage'] != 'ps': return refl
+    if refl.get('fold'):   # folded (see fold_try): the readable-tile library is the shader's own
+        for d in ((out,) if 'mac' in TARGETS else ()) + ((IOSOUT,) if IOSOUT else ()): clone(os.path.join(d, key + '_b.metallib'), os.path.join(d, key + '_bf.metallib'))
+        refl['fetch'] = refl['fold']
+        write_refl(key, refl)
+        return refl
     # Those with rewritable samples get variants as before; those without get an output-mapping-only variant, and only for keys in the list (bf_want.tsv, produced by the host planner)
     fv, fmeta = dmsh_fetch.variant(src, refl['bindings'], om_only_ok=key in BF_WANT)
     if not fv:
@@ -594,6 +656,7 @@ def unfillable(dr):
 RULES = []   # MSL rewrite rules attached by shader name (function, applicability test); the former dark-range remap toe has been removed (back to the original Switch brightness)
 # CODE_FP hashes the code form of this file and its helper modules (dmsh_chain.code_form): editing a comment, a docstring or the layout does not change any shader's key.
 # The first-stage code fingerprint does not include dmsh_fetch.py; readable-tile variants get a separate second-stage cache keyed on the generated MSL.
+# A folded pixel shader's library comes from dmsh_fetch.py, so its rule fingerprint takes that file (fold_try).
 CODE_FP = hashlib.sha256(source_without_rule_bodies() + b''.join(b'\0' + dmsh_chain.code_form(open(m.__file__, 'r').read()) for m in (dmsh_chain, dmsh_geometry, dmsh_atomic) + ((ios_metal,) if IOSOUT else ()))).hexdigest()
 TOOL_FP = tool_fingerprint().encode()
 
@@ -639,6 +702,7 @@ def load_pairs(game, package):
     return pairs
 
 PAIRS = load_pairs(GAME, dm_dir)
+PAIRED_PS = set().union(*PAIRS.values())   # pixel shaders of the pair tables, never folded (fold_on)
 
 def vs_pad(key, src):
     """Give a vertex shader the outputs its paired pixel shaders read but it does not write, with the value (0,0,0,1).
@@ -946,16 +1010,19 @@ def finish(key, w, j, c1):
         open(msl, 'w').write(full)
     fu, fmask = fs_uint(src) if j['stage'] == 'ps' else (None, 0)   # the integer-output entry points (see fs_uint); the analysis below uses the source with only main0
     if fu: plain = src; open(msl, 'w').write(fu)
-    def compile_targets():   # the selected targets from the same MSL (MSL identical to one compiled before takes that library, dmsh_mtlcache.py)
-        if 'mac' in TARGETS: MTL.compile('mac', msl, lib)
-        if 'ios' in TARGETS and IOSOUT: MTL.compile('ios', msl, os.path.join(IOSOUT, key + '_b.metallib'))
-    try: compile_targets()
-    except subprocess.CalledProcessError as e:
-        if not lay and not fu: return 'metal failed', str(e)[:160], None
-        open(msl, 'w').write(plain); lay = fu = None   # the layer and integer-output entry points are extras: a library that does not build with them is built without
+    bindings = reflect(key, j['stage'], src, res)
+    folded = fold_try(key, msl, bindings) if j['stage'] == 'ps' and fold_on(key) else None
+    if not folded:
+        def compile_targets():   # the selected targets from the same MSL (MSL identical to one compiled before takes that library, dmsh_mtlcache.py)
+            if 'mac' in TARGETS: MTL.compile('mac', msl, lib)
+            if 'ios' in TARGETS and IOSOUT: MTL.compile('ios', msl, os.path.join(IOSOUT, key + '_b.metallib'))
         try: compile_targets()
-        except subprocess.CalledProcessError as e: return 'metal failed', str(e)[:160], None
-    clone(msl, os.path.join(out, key + '_b.metal'))
+        except subprocess.CalledProcessError as e:
+            if not lay and not fu: return 'metal failed', str(e)[:160], None
+            open(msl, 'w').write(plain); lay = fu = None   # the layer and integer-output entry points are extras: a library that does not build with them is built without
+            try: compile_targets()
+            except subprocess.CalledProcessError as e: return 'metal failed', str(e)[:160], None
+        clone(msl, os.path.join(out, key + '_b.metal'))
     entry = re.search(r'(vertex|fragment|kernel)\s+\S+\s+(\w+)\s*\(', src)
     dr = drv_reads(src)
     refl = {'key': key + '_b', 'route': 'B', 'chain': CHAIN, 'dm_ctl': key, 'source': f'{name}#{k}', 'pc_paired': pc_of[key], 'stage': j['stage'],
@@ -963,8 +1030,9 @@ def finish(key, w, j, c1):
             **({'entry_discard': 'main0_discard'} if discard else {}),
             **({'entry_tf': 'main0_tf', 'tf_strides': [e['stride'] if e else 0 for e in j['tf']]} if j.get('tf') else {}),
             **({'entry_layer': 'main0_l', 'entry_layer_z': 'main0_lz', 'layer_from': lay} if lay else {}), **({'entry_u': 'main0_u'} if fu else {}), **({'entry_m': 'main0_m', 'uint_mask_m': fmask} if fu and fmask else {}),
+            **({'fold': folded} if folded else {}),
             'threadgroup_size': j.get('local'), 'c1': c1.hex(), 'notes': res['notes'] + (['not in the answer table, queries use defaults'] if j.get('no_facts') else []), 'drv_reads': dr, 'drv_unfillable': unfillable(dr),
-            'bindings': reflect(key, j['stage'], src, res),
+            'bindings': bindings,
             'vertex_inputs': [{'location': int(m.group(2)), 'msl_type': m.group(1)} for m in re.finditer(r'(\w+)\s+\w+\s*\[\[attribute\((\d+)\)\]\]', src)],
             'raster': raster_facts(j['stage'], src), 'vs_pad': pad}
     if j['stage'] == 'vs': full = open(msl).read(); vin_finish(key, full, refl); pull_finish(key, full, refl)   # the shadow-input and pulling libraries (dmsh_vin.py, dmsh_pull.py), from the source with every entry point
@@ -1008,7 +1076,8 @@ for key in keys:
     if PAIRS.get(key): digests[key] = pair_keyed(digests[key], [plain_digest(p) for p in sorted(PAIRS[key])])
 for key in keys:
     name, rec = recs[key]
-    rule_fps[key] = hashlib.sha256(shader_rule_source(name) + ','.join(sorted(PAIRS.get(key, ()))).encode()).hexdigest()   # the vertex shader must be rebuilt when its pairs change (vs_pad)
+    rule_fps[key] = hashlib.sha256(shader_rule_source(name) + ','.join(sorted(PAIRS.get(key, ()))).encode()   # the vertex shader must be rebuilt when its pairs change (vs_pad)
+                                   + (b'\0fold\0' + FETCH_SRC if fold_on(key) else b'')).hexdigest()   # a folded library comes from dmsh_fetch.py (fold_try)
     hit, cache_reasons[key] = cache_lookup(key, digests[key], rule_fps[key], CODE_FP)
     if hit: cache_hits.add(key)
     else: jobs[key], c1s[key] = job_for(key, name, rec, w)
@@ -1054,6 +1123,7 @@ def mesh_finish(pair):
 _mesh = GAME.table('geo_mesh.tsv')
 if _mesh.exists():
     with cf.ThreadPoolExecutor(NJ) as ex: list(ex.map(mesh_finish, [tuple(ln.split()[:2]) for ln in _mesh.read_text().splitlines() if ln.strip() and not ln.startswith('#')]))
+WARM = warm_folded([os.path.join(out, r[0] + '_b.metallib') for r in res if r[1] == 'ok' and isinstance(rf := r[3], dict) and rf.get('fold')] if 'mac' in TARGETS else [])   # also those restored from the cache
 shutil.rmtree(w, ignore_errors=True)
 st = collections.Counter(r[1] for r in res)
 print(f'shaders {len(res)}: ok {st["ok"]}, ' + ', '.join(f'{k} {v}' for k, v in st.items() if k != 'ok'))
@@ -1061,6 +1131,7 @@ print(f'shader cache: hit {PRE_STATS["hit"]}, rebuilt {PRE_STATS["miss"]}')
 for reason in ('new key', 'rule changed', 'code fingerprint changed: all rebuilt'):
     if PRE_STATS[reason]: print(f'  {reason} {PRE_STATS[reason]}')
 print(f'variant cache: generated {BF_STATS["generated"]}, hit {BF_STATS["hit"]}, rebuilt {BF_STATS["miss"]}, compiled {BF_STATS["compile"]}')
+print('folded (one library for <key>_b and <key>_bf, fold_try): ' + (', '.join(f'{k} {v}' for k, v in FOLD_STATS.items()) or 'none built this run') + f'; Metal cache warmed: {WARM}' if FOLD else 'folding off (DMSH_FOLD=0)')
 print(f'shadow-input libraries (<key>_bv, dmsh_vin.py): {VIN_STATS["generated"]} generated, {VIN_STATS["failed"]} failed to compile, {VIN_STATS["not generated"]} not generated; '
       f'{VIN_STATS["inputs"]} integer inputs shadowed, {VIN_STATS["float only"]} of them with no other-sign shadow (attribute indices ran out)')
 print(f'pulling libraries (<key>_bp, dmsh_pull.py): {PULL_STATS["generated"]} generated, {PULL_STATS["failed"]} failed to compile, {PULL_STATS["not generated"]} not generated, '
