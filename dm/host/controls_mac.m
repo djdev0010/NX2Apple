@@ -161,7 +161,7 @@ static NSStackView *row(NSArray<NSView *> *views) { NSStackView *s = [NSStackVie
     _deadzone = [NSSlider sliderWithValue:0 minValue:0 maxValue:0.5 target:self action:@selector(deadzoneChanged:)];
     [_deadzone.widthAnchor constraintEqualToConstant:220].active = YES;
     _deadzoneValue = label(@"");
-    _gameOnly = [NSButton checkboxWithTitle:[NSString stringWithFormat:@"Save for %s only", dm_profile()->name] target:self action:@selector(gameOnlyChanged:)];
+    _gameOnly = [NSButton checkboxWithTitle:[NSString stringWithFormat:@"Save for %@ only", @(dm_profile()->name)] target:self action:@selector(gameOnlyChanged:)];
     _status = label(@""); _status.textColor = NSColor.secondaryLabelColor; _status.lineBreakMode = NSLineBreakByTruncatingTail;
     [_status.widthAnchor constraintEqualToConstant:600].active = YES;
     _save = [NSButton buttonWithTitle:@"Save" target:self action:@selector(save:)]; _save.keyEquivalent = @"\r";
@@ -179,6 +179,10 @@ static NSStackView *row(NSArray<NSView *> *views) { NSStackView *s = [NSStackVie
     ]];
     root.orientation = NSUserInterfaceLayoutOrientationVertical; root.alignment = NSLayoutAttributeLeading; root.spacing = 10;
     root.edgeInsets = NSEdgeInsetsMake(16, 20, 16, 20);
+    // The stack does not hold its rows inside the right inset (the buttons grid ran to the window's edge), so each row is held there, and the window's fitting size counts it
+    for (NSView *v in root.arrangedSubviews) [v.trailingAnchor constraintLessThanOrEqualToAnchor:root.trailingAnchor constant:-root.edgeInsets.right].active = YES;
+    // A grid keeps its own width: stretched to the window's, its spare width went into one column (a player's Remove far from its Press…)
+    for (NSGridView *g in @[_players, _buttons]) [g setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
     self.window.contentView = root;
 }
 
@@ -201,8 +205,11 @@ static NSStackView *row(NSArray<NSView *> *views) { NSStackView *s = [NSStackVie
     _deadzone.doubleValue = g_deadzone; _deadzoneValue.stringValue = [NSString stringWithFormat:@"%d%%", (int)lroundf(g_deadzone * 100)];
     _gameOnly.state = g_game_only ? NSControlStateValueOn : NSControlStateValueOff;
     _save.enabled = _dirty;
+    NSWindow *w = self.window; NSSize fit = w.contentView.fittingSize; NSRect f = [w frameRectForContentRect:NSMakeRect(0, 0, fit.width, fit.height)];
+    [w setFrame:NSMakeRect(NSMinX(w.frame), NSMaxY(w.frame) - f.size.height, f.size.width, f.size.height) display:YES];
 }
-static void grid_clear(NSGridView *g) { while (g.numberOfRows) [g removeRowAtIndex:0]; }
+// Removing a row leaves its views in the grid view, so they are removed too: the old labels stayed drawn under the new ones
+static void grid_clear(NSGridView *g) { while (g.numberOfRows) [g removeRowAtIndex:0]; for (NSView *v in g.subviews.copy) [v removeFromSuperview]; }
 - (void)reloadPlayers {
     grid_clear(_players);
     int used = 0; for (int p = 0; p < DM_PLAYERS; p++) if (pads_player(p) || pads_player_is_keyboard(p)) used = p + 1;
@@ -238,7 +245,7 @@ static void grid_clear(NSGridView *g) { while (g.numberOfRows) [g removeRowAtInd
             for (int e = 0; e < PE_N; e++) if (m->to[e] == pad_buttons[i].bit) [by addObject:example ? elem_name(example, e) : @(pad_elem_label[e])];
             NSTextField *mapped = label(by.count ? [by componentsJoinedByString:@", "] : @"(none)");
             mapped.textColor = NSColor.secondaryLabelColor; mapped.lineBreakMode = NSLineBreakByTruncatingTail; mapped.toolTip = mapped.stringValue;
-            [mapped.widthAnchor constraintEqualToConstant:150].active = YES;
+            [mapped.widthAnchor constraintEqualToConstant:200].active = YES;
             NSButton *press = [NSButton buttonWithTitle:_capture == DmCaptureButton && _captureButton == pad_buttons[i].bit ? @"Waiting…" : @"Press…"
                                                  target:self action:@selector(pressForButton:)];
             press.tag = i;
@@ -262,7 +269,7 @@ static void grid_clear(NSGridView *g) { while (g.numberOfRows) [g removeRowAtInd
         NSMutableArray *on = [NSMutableArray new];
         const pad_map *m = map_for(pad_type(g.controller));
         for (int e = 0; e < PE_N; e++) if (held >> e & 1) [on addObject:[NSString stringWithFormat:@"%@ → %@", elem_name(g.controller, e), button_label(m->to[e])]];
-        if (on.count) [self note:[NSString stringWithFormat:@"%s: %@", pad_name(g.controller), [on componentsJoinedByString:@", "]]];
+        if (on.count) [self note:[NSString stringWithFormat:@"%@: %@", @(pad_name(g.controller)), [on componentsJoinedByString:@", "]]];
         return;
     }
     uint32_t before = [_heldAtCapture objectForKey:g.controller].unsignedIntValue, fresh = held & ~before;
@@ -273,10 +280,10 @@ static void grid_clear(NSGridView *g) { while (g.numberOfRows) [g removeRowAtInd
     if (kind == DmCaptureButton) {
         _type = pad_type(g.controller);   // the map of the controller pressed
         pad_map_assign(map_edit(_type), e, _captureButton);
-        [self changed:[NSString stringWithFormat:@"%@ on %s now presses %@. Click Save to keep it.", elem_name(g.controller, e), pad_name(g.controller), button_label(_captureButton)]];
+        [self changed:[NSString stringWithFormat:@"%@ on %@ now presses %@. Click Save to keep it.", elem_name(g.controller, e), @(pad_name(g.controller)), button_label(_captureButton)]];
     } else {
         pads_assign(g.controller, _capturePlayer);
-        [self changed:[NSString stringWithFormat:@"%s is player %d. Click Save to keep it.", pad_name(g.controller), _capturePlayer + 1]];
+        [self changed:[NSString stringWithFormat:@"%@ is player %d. Click Save to keep it.", @(pad_name(g.controller)), _capturePlayer + 1]];
     }
 }
 - (void)startCapture:(DmCapture)kind {
@@ -308,7 +315,7 @@ static void grid_clear(NSGridView *g) { while (g.numberOfRows) [g removeRowAtInd
 - (void)save:(id)sender {
     if (!controls_save()) { [self note:@"Could not save the settings (see the game's log)."]; return; }
     _dirty = NO; [self reload];
-    [self note:g_game_only ? [NSString stringWithFormat:@"Saved for %s only.", dm_profile()->name] : @"Saved for every game."];
+    [self note:g_game_only ? [NSString stringWithFormat:@"Saved for %@ only.", @(dm_profile()->name)] : @"Saved for every game."];
 }
 - (void)revert:(id)sender {   // the saved buttons and sticks again; the players stay where they are
     char unused[DM_PLAYERS][64]; controls_load(unused);
