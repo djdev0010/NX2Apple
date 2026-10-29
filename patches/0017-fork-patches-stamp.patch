@@ -23,10 +23,10 @@ Issue: LNPANDY/NX2Apple#123
  6 files changed, 16 insertions(+), 2 deletions(-)
 
 diff --git a/dm/ios/Sources/main.m b/dm/ios/Sources/main.m
-index 5afddbb6..c4c84e5d 100644
+index b2064dca..bec90271 100644
 --- a/dm/ios/Sources/main.m
 +++ b/dm/ios/Sources/main.m
-@@ -178,6 +178,9 @@ static int boot_env(void) {
+@@ -185,6 +185,9 @@ static int boot_env(void) {
      NSString *log = [doc stringByAppendingPathComponent:@"log.txt"], *prev = [doc stringByAppendingPathComponent:@"log.prev.txt"];
      [fm removeItemAtPath:prev error:nil]; [fm moveItemAtPath:log toPath:prev error:nil];
      if (freopen(log.fileSystemRepresentation, "w", stderr)) setvbuf(stderr, NULL, _IOLBF, 0);
@@ -49,7 +49,7 @@ index 298b2eed..e9d9c174 100644
          GCSupportsControllerUserInteraction: true   # Physical controllers (GameController)
          GCSupportedGameControllers:
 diff --git a/dm/ios/tools/build_ipa.sh b/dm/ios/tools/build_ipa.sh
-index 3d8f5c73..a0c79a3c 100755
+index 6a338846..92fd85d4 100755
 --- a/dm/ios/tools/build_ipa.sh
 +++ b/dm/ios/tools/build_ipa.sh
 @@ -38,6 +38,7 @@ VNACP=$(dirname "$ROMFS")/control.nacp; [ -f "$VNACP" ] || VNACP=$W/data/v0/cont
@@ -94,7 +94,7 @@ index af479db7..2cf5f549 100644
      CFArrayRef rules = setting_rules();   // the settings the launch environment already set: the window shows them, fixed
      for (CFIndex i = 0; rules && i < CFArrayGetCount(rules); i++) { char env[128]; if (rule_env(CFArrayGetValueAtIndex(rules, i), env, sizeof env) && getenv(env)) add_key(&g_launch_keys, env); }
 diff --git a/dm/mac/pack_app.py b/dm/mac/pack_app.py
-index 44d83c23..6f28830c 100755
+index e31000ea..afadf7af 100755
 --- a/dm/mac/pack_app.py
 +++ b/dm/mac/pack_app.py
 @@ -110,11 +110,18 @@ def settings_rules(listed):   # DMSettings: what the launcher accepts as each se

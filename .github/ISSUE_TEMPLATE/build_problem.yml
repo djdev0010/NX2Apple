@@ -4,7 +4,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for the report. A build fails at one step with one message; the fields below find it.
+        Thanks for the report. A build fails at one step with one message. The fields below find it.
         **Never attach game files, keys, title keys or anything extracted from a game.** Logs and screenshots are fine.
         If the game builds but then crashes, freezes or looks wrong, use the Game problem form.
   - type: dropdown
@@ -93,7 +93,7 @@ body:
     attributes:
       label: Fork patches line
       description: "The patches your build carries beyond upstream's engine: the first line of the game app's log (`fork patches: ...`), or the contents of `dm/fork_patches.txt` in the NX2Apple folder you built from. Optional."
-      placeholder: "fork patches: runtime-profile, romfsarc, ..."
+      placeholder: "fork patches: runtime-profile, ios-game-data-folder, ..."
     validations:
       required: false
   - type: checkboxes

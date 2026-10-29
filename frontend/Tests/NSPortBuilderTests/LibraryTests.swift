@@ -367,7 +367,7 @@ final class LibraryTests: XCTestCase {
                 print('error: "iOS Team Provisioning Profile" cannot be registered to your development team', flush=True)
                 sys.exit(1)
             app = pathlib.Path(a[a.index('-derivedDataPath') + 1]) / 'Build/Products/Release-iphoneos/DmIOS.app'
-            app.mkdir(parents=True)
+            app.mkdir(parents=True, exist_ok=True)   # a re-sign rebuilds over the app the install left there
             with (app / 'Info.plist').open('wb') as f: plistlib.dump({'CFBundleIdentifier': 'org.nxnative.test'}, f)
             print('CodeSign ' + str(app), flush=True)
         elif a[:3] == ['devicectl', 'device', 'install']:
@@ -516,6 +516,52 @@ final class LibraryTests: XCTestCase {
                        ["/x", "devicectl", "device", "install", "app", "--device", "D", "/a/DmIOS.app"])
         XCTAssertEqual(BuildModel.ipaCommand(payload: "/t/Payload", ipa: "/o/Game.ipa"),
                        ["/usr/bin/ditto", "-c", "-k", "--norsrc", "--keepParent", "/t/Payload", "/o/Game.ipa"])
+    }
+
+    /// A re-sign is the install's xcodebuild line (same project, derived data, team) plus the installed app's own bundle
+    /// ID, so Xcode reuses the compiled game and the device keeps the app's Documents; then the app is installed again,
+    /// with no second romfs pack.
+    @MainActor func testResignSignsAgainAndInstallsWithoutRepacking() throws {
+        let (model, _, calls, _) = try runInstallFlow(transfer: true)
+        let app = model.installedAppPath
+        let done = expectation(description: "Re-signed")
+        model.resignOnDevice(app: app, device: "00008150-AAAA") { done.fulfill() }
+        wait(for: [done], timeout: 30)
+        let log = try String(contentsOf: calls, encoding: .utf8).split(separator: "\n").map(String.init)
+        let resign = try XCTUnwrap(log.last { $0.hasPrefix("xcodebuild -project") })
+        for part in ["-derivedDataPath \(temporary.path)/\(titleID)_build/xcode-derived-data", "-allowProvisioningUpdates",
+                     "DEVELOPMENT_TEAM=TEAM123456", "DM_COPY_ROMFS=NO", "PRODUCT_BUNDLE_IDENTIFIER=org.nxnative.test", "build"] {
+            XCTAssertTrue(resign.contains(part), part)
+        }
+        XCTAssertEqual(log.filter { $0.hasPrefix("xcodebuild -project") }.count, 3)   // the install's two signs, then this one
+        XCTAssertEqual(log.filter { $0.hasPrefix("romfs_image") }.count, 1)            // the game files are not packed again
+        XCTAssertEqual(log.last { $0.hasPrefix("devicectl device install app") },
+                       "devicectl device install app --device 00008150-AAAA \(app)")
+        XCTAssertEqual(model.doneNote, String(format: model.t("dev.resigned"), "iPhone"))
+        XCTAssertFalse(model.running)
+    }
+
+    /// A re-sign that cannot work says what to do: a missing cached project, or no signing team chosen.
+    @MainActor func testResignReportsAMissingProjectOrTeam() throws {
+        let (model, _, _, _) = try runInstallFlow(transfer: true)
+        let savedTeam = UserDefaults.standard.string(forKey: "signingTeam")
+        defer { UserDefaults.standard.set(savedTeam, forKey: "signingTeam") }
+        // An app with a bundle ID but no project beside it: the cached build was moved or removed.
+        let orphan = temporary.appendingPathComponent("orphan/xcode-derived-data/Build/Products/Release-iphoneos/DmIOS.app")
+        try FileManager.default.createDirectory(at: orphan, withIntermediateDirectories: true)
+        try PropertyListSerialization.data(fromPropertyList: ["CFBundleIdentifier": bundleID], format: .xml, options: 0)
+            .write(to: orphan.appendingPathComponent("Info.plist"))
+        var reported = expectation(description: "Missing project reported")
+        model.resignOnDevice(app: orphan.path, device: "00008150-AAAA") { reported.fulfill() }
+        wait(for: [reported], timeout: 10)
+        XCTAssertEqual(model.doneNote, String(format: model.t("dev.resignNoProject"),
+                                             model.shortPath(temporary.path + "/orphan/xcode/DmIOS.xcodeproj")))
+        model.signingTeam = ""
+        reported = expectation(description: "Missing team reported")
+        model.resignOnDevice(app: model.installedAppPath, device: "00008150-AAAA") { reported.fulfill() }
+        wait(for: [reported], timeout: 10)
+        XCTAssertEqual(model.doneNote, model.t("dev.resignNoTeam"))
+        XCTAssertFalse(model.running)
     }
 
     func testCorruptLibraryIsReportedWithoutOverwritingIt() throws {
@@ -782,6 +828,10 @@ final class LibraryTests: XCTestCase {
         let examples = [(titleID, "Hades"), ("01007EF00011E000", "The Legend of Zelda: Breath of the Wild"),
                         ("0100000000010000", "Super Mario Odyssey"), ("010093801237C000", "Metroid Dread")]
         for (id, name) in examples.prefix(3) { _ = try library.addApp(makeApp(id, name: name)) }
+        // The selected game (Hades) has run: its log is beside the app, so Manage > Show game log is on in the capture.
+        try Data().write(to: temporary.appendingPathComponent(GameLog.marker))
+        try FileManager.default.createDirectory(at: temporary.appendingPathComponent("log"), withIntermediateDirectories: true)
+        try Data("fork patches: none\n".utf8).write(to: temporary.appendingPathComponent("log/\(titleID).log"))
         model.slots[0].paths = ["/preview/Metroid Dread [010093801237C000].nsp"]
         _ = library.rememberInputs(model)
         model.slots[0].paths = []
@@ -1125,6 +1175,63 @@ final class LibraryTests: XCTestCase {
             XCTAssertTrue(v.0 > floor.0 || (v.0 == floor.0 && v.1 >= floor.1),
                           "picked \(path) at \(v.0).\(v.1), below the \(floor.0).\(floor.1) floor")
         }
+    }
+
+    /// A uv-managed Python sits outside every location the app probed, and a GUI launch's PATH
+    /// hides ~/.local/bin: uv had a working 3.12 with the packages and the panel still said
+    /// "No Python 3.12 or newer found".
+    func testUvManagedPythonsAreCandidates() throws {
+        let oldShim = BuildModel.uvShimDir, oldRoot = BuildModel.uvPythonRoot
+        defer { BuildModel.uvShimDir = oldShim; BuildModel.uvPythonRoot = oldRoot }
+        let shim = temporary.appendingPathComponent("local/bin")
+        let root = temporary.appendingPathComponent("uv/python")
+        let store = root.appendingPathComponent("cpython-3.12.13-macos-aarch64-none/bin")
+        for dir in [shim, store] {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        // uv links python3 / python3.12 shims in ~/.local/bin; the store holds the real binary.
+        for dir in [shim, store] {
+            for name in ["python3", "python3.12"] {
+                try Data("#!/bin/sh\n".utf8).write(to: dir.appendingPathComponent(name))
+            }
+        }
+        BuildModel.uvShimDir = shim.path
+        BuildModel.uvPythonRoot = root.path
+        let cands = BuildModel.pythonCandidates()
+        XCTAssertTrue(cands.contains(shim.appendingPathComponent("python3").path),
+                      "the uv shim must be probed: a GUI launch's PATH does not contain ~/.local/bin")
+        XCTAssertTrue(cands.contains(shim.appendingPathComponent("python3.12").path))
+        XCTAssertTrue(cands.contains(store.appendingPathComponent("python3.12").path),
+                      "uv's store holds the interpreter itself, not only the shim")
+    }
+
+    /// The panel hands makeVenv() the venv path it hopes to create when findPython() found no
+    /// interpreter. That cannot be a base: `-m venv` on it could not even start, so the Python
+    /// row stayed red however often 安装 was pressed.
+    func testVenvBaseIsNeverTheVenvItHasToCreate() throws {
+        let oldShim = BuildModel.uvShimDir, oldRoot = BuildModel.uvPythonRoot, oldVenv = BuildModel.venvDir
+        defer {
+            BuildModel.uvShimDir = oldShim
+            BuildModel.uvPythonRoot = oldRoot
+            BuildModel.venvDir = oldVenv
+        }
+        let shim = temporary.appendingPathComponent("bin")
+        try FileManager.default.createDirectory(at: shim, withIntermediateDirectories: true)
+        // A stand-in interpreter: only its version and its exit status are asked for here.
+        let interp = shim.appendingPathComponent("python3.12")
+        try Data("#!/bin/sh\n[ \"$1\" = -c ] && echo 3.12\nexit 0\n".utf8).write(to: interp)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: interp.path)
+        BuildModel.uvShimDir = shim.path
+        BuildModel.uvPythonRoot = temporary.appendingPathComponent("no-uv").path
+        BuildModel.venvDir = temporary.appendingPathComponent("no-venv").path
+
+        let wanted = BuildModel.venvPython()      // findPython()'s last resort, and what the panel passes
+        let base = try XCTUnwrap(BuildModel.venvBase(preferred: wanted), "a usable interpreter must be found")
+        XCTAssertNotEqual(base, wanted, "the venv cannot be the base it is created from")
+        let v = try XCTUnwrap(BuildModel.pythonVersion(base))
+        XCTAssertTrue(v.0 > BuildModel.minPython.0 || (v.0 == BuildModel.minPython.0 && v.1 >= BuildModel.minPython.1))
+        XCTAssertEqual(BuildModel.venvBase(preferred: interp.path), interp.path,
+                       "an interpreter that does run at the required version is kept as given")
     }
 
     /// Issue #73: the extraction writes RomFS.img now, not a RomFS folder. The archive step looked

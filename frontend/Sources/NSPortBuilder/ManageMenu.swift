@@ -6,9 +6,11 @@ struct ManageActions {
     var rebuild: () -> Void = {}
     var options: () -> Void = {}
     var saves: () -> Void = {}
+    var cheats: () -> Void = {}
     var changeArtwork: () -> Void = {}
     var resetArtwork: () -> Void = {}
     var reveal: () -> Void = {}
+    var showLog: () -> Void = {}
     var freeSpace: () -> Void = {}
     var remove: () -> Void = {}
 }
@@ -21,19 +23,25 @@ struct ManageItem: Identifiable {
     var enabled = true
     var destructive = false
     var separatorBefore = false
+    var hint: String?   // the tooltip, set on a row that is off to say why
     let run: () -> Void
 
     /// The menu's rows, in order, built in one place: a new item is one line here. The rules are the ones the system menu had:
     /// Build again is off while a build runs or with no recorded inputs, Remove while this game is the one building.
     static func list(game: LibraryGame, labels t: (String) -> String, running: Bool, olderTools: Bool, activeBuildID: UUID?,
-                     hasBuildFolder: Bool, actions a: ManageActions) -> [ManageItem] {
+                     hasBuildFolder: Bool, hasLog: Bool = false, actions a: ManageActions) -> [ManageItem] {
         var items = [ManageItem(id: "rebuild", symbol: "arrow.clockwise", title: t(olderTools ? "library.rebuild" : "library.buildAgain"),
                                 enabled: !running && !game.inputs["base", default: []].isEmpty, run: a.rebuild)]
         if game.isReady { items.append(.init(id: "options", symbol: "slider.horizontal.3", title: t("launch.title"), run: a.options)) }
         items.append(.init(id: "saves", symbol: "tray.and.arrow.down", title: t("saves.menu"), run: a.saves))
+        items.append(.init(id: "cheats", symbol: "wand.and.stars", title: t("cheats.menu"), run: a.cheats))
         items.append(.init(id: "artwork", symbol: "photo", title: t("library.changeArtwork"), run: a.changeArtwork))
         if !game.artworkPath.isEmpty { items.append(.init(id: "resetArtwork", symbol: "arrow.uturn.backward", title: t("library.resetArtwork"), run: a.resetArtwork)) }
         if game.revealTarget != nil { items.append(.init(id: "reveal", symbol: "folder", title: t("install.reveal"), run: a.reveal)) }
+        if game.isReady {
+            items.append(.init(id: "log", symbol: "doc.text.magnifyingglass", title: t("library.showLog"), enabled: hasLog,
+                               hint: hasLog ? nil : t("library.showLog.none"), run: a.showLog))
+        }
         if hasBuildFolder { items.append(.init(id: "freeSpace", symbol: "externaldrive", title: t("free.menu"), run: a.freeSpace)) }
         items.append(.init(id: "remove", symbol: "trash", title: t("library.remove"), enabled: game.id != activeBuildID,
                            destructive: true, separatorBefore: true, run: a.remove))
@@ -57,7 +65,7 @@ enum ManagePad {
         if menuOpen {
             switch action {
             case .b: return .close
-            case .x, .y, .l, .r: return .swallow
+            case .x, .y, .l, .r, .plus, .select: return .swallow
             case .up, .down, .left, .right, .a: return .pass
             }
         }
@@ -161,6 +169,7 @@ struct ManageMenuPanel: View {
         }
         .buttonStyle(.plain)
         .disabled(!item.enabled)
+        .help(item.hint ?? "")
         .onHover { inside in if inside && item.enabled { highlighted = index } else if !inside && highlighted == index { highlighted = nil } }
         .accessibilityLabel(item.title)
         .padTarget(item.padID, scope: "manage", radius: 8) { activate(item) }
