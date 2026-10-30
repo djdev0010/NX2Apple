@@ -17,6 +17,7 @@ from PySide6.QtCore import QSettings, Q_ARG, QMetaObject, QObject, Qt, QThread, 
 
 from . import build_failure as bf
 from . import input_staging
+from . import inputs
 from . import platform_util as pu
 from .i18n import Lang
 from .localization import t
@@ -226,7 +227,7 @@ class Model(QObject):
             return Dep('python', 'dep.python', 'dep.python.hint', DepState.MISSING,
                        f'dep.python.missing:{py} ({py_ver})',
                        install=[py, '-m', 'pip', 'install', 'lz4', 'capstone', 'fonttools',
-                                'backports.zstd', 'nsz'])
+                                'zbic', 'backports.zstd', 'nsz'])
         if pu.IS_WIN:
             return Dep('python', 'dep.python', 'dep.python.hint', DepState.MISSING,
                        f'dep.python.none:{py or "python3"}',
@@ -876,9 +877,9 @@ class Model(QObject):
                 self.log('venv creation failed\n')
                 return False
         ver = pu._ver_tuple(pu._python_version(vpy))
-        pkgs = ['lz4', 'capstone', 'fonttools', 'nsz']
+        pkgs = ['lz4', 'capstone', 'fonttools', 'zbic', 'nsz']
         if ver < (3, 14):
-            pkgs.insert(3, 'backports.zstd')
+            pkgs.insert(4, 'backports.zstd')
         self.log(f'$ {vpy} -m pip install {" ".join(pkgs)}\n')
         try:
             p = subprocess.Popen([vpy, '-m', 'pip', 'install'] + pkgs, stdout=subprocess.PIPE,
@@ -994,13 +995,10 @@ class Model(QObject):
             elif p.is_dir():
                 files += [q for q in sorted(p.iterdir()) if q.is_file()]
         self.keys_path = next((str(f) for f in files if f.name.lower() == 'prod.keys'), self.keys_path)
-        nsps = [f for f in files if f.suffix.lower() in ('.nsp', '.xci', '.nsz', '.xcz')]
-        updates = [f for f in nsps if '[upd]' in f.name.lower() or 'update' in f.name.lower()]
-        dlcs = [f for f in nsps if '[dlc]' in f.name.lower() or 'addon' in f.name.lower()]
-        bases = [f for f in nsps if f not in updates and f not in dlcs]
-        self.base_path = str(bases[0]) if bases else ''
-        self.update_path = str(updates[0]) if updates else ''
-        self.dlc_paths = [str(f) for f in dlcs]
+        found = inputs.classify(files)
+        self.base_path = str(found['base']) if found['base'] else ''
+        self.update_path = str(found['update']) if found['update'] else ''
+        self.dlc_paths = [str(f) for f in found['dlc']]
         self.repoChanged.emit()
 
     @property
@@ -1185,6 +1183,10 @@ class Model(QObject):
             row = next((d for d in self.deps if d.id == 'dotnet'), None)
             if row:
                 self.install_dep(row)
+        elif f.kind == bf.ZBIC:
+            # the python row's own fix (a venv with the packages, zbic among them): the row may read OK, so the command is built here
+            self.install_dep(Dep('python', 'dep.python', 'dep.python.hint', DepState.MISSING,
+                                 install=[self.python_path, '-m', 'pip', 'install', 'zbic']))
         elif f.kind == bf.IOS_SDK and not pu.IS_WIN:
             self.install_dep(Dep('xcode', 'dep.xcode', 'dep.xcode.hint', DepState.MISSING,
                                  install=['/usr/bin/xcodebuild', '-downloadPlatform', 'iOS']))
@@ -1276,13 +1278,5 @@ class Model(QObject):
 
     @staticmethod
     def _title_id(nsp: str) -> int | None:
-        """The title ID from a dump's file name: the 16 hex digits in [0100…], which every
-        dumper puts there."""
-        import re
-        m = re.search(r'\[([0-9A-Fa-f]{16})\]', Path(nsp).name)
-        if not m:
-            return None
-        try:
-            return int(m.group(1), 16)
-        except ValueError:
-            return None
+        """The title ID from a dump's file name: bracketed [0100…] or a bare 16-digit ID."""
+        return inputs.title_id(Path(nsp).name)

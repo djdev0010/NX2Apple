@@ -38,6 +38,19 @@ final class BuildFailureRowsTests: XCTestCase {
         XCTAssertEqual(BuildFailureClassifier.classify("[RED] the iOS SDK is not installed", inputs: inputs).kind, .iosSDK, "a known stop keeps its own row")
     }
 
+    func testAMissingZbicPackageIsItsOwnRowWithAnInstallButton() throws {
+        let log = "[3/9] extract\n" + (try fixture("zbic.missing").text) + "\n"
+        XCTAssertEqual(BuildFailureClassifier.classify(log).kind, .zbic)
+        XCTAssertEqual(BuildFailureClassifier.classify("[RED] the zbic package decoded it").kind, .unknown)
+        XCTAssertTrue(L10n.table["fail.zbic.next"]?.en.contains("pip install zbic") ?? false)
+        XCTAssertEqual(L10n.table["fail.zbic.button"]?.en, "Install zbic")
+        let m = BuildModel()
+        m.logTail = log
+        m.noteFailure()
+        XCTAssertEqual(m.failure?.kind, .zbic)
+        XCTAssertFalse(m.fixBusy(.zbic))
+    }
+
     func testSeveralGamesAndNoTitleID() throws {
         XCTAssertEqual(BuildFailureClassifier.classify(try fixture("games.several").text).kind, .severalGames)
         let none = try fixture("games.noTitleID")
@@ -66,7 +79,9 @@ final class BuildFailureRowsTests: XCTestCase {
         try FileManager.default.createDirectory(at: volumes.appendingPathComponent("Games"), withIntermediateDirectories: true)
         XCTAssertEqual(BuildFailureClassifier.classify(log, inputs: .init(keysPath: "", paths: [gone], volumes: volumes.path)).kind, .noTitleID, "the drive is there")
         XCTAssertEqual(BuildFailureClassifier.classify(log, inputs: .init(keysPath: "/Users/x/prod.keys", paths: ["/Users/x/g.nsp"], volumes: volumes.path)).kind, .noTitleID, "a path off /Volumes is no drive")
-        XCTAssertTrue(BuildModel().failureWhat(f).contains("“Games”"))
+        let m = BuildModel()
+        m.lang = .en   // the quotes are English ones whatever the device language is
+        XCTAssertTrue(m.failureWhat(f).contains("“Games”"))
     }
 
     func testTheInstallStepsThatFailedBecomeRows() {
